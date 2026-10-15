@@ -29,6 +29,7 @@ import { createSocialClient } from "./social/client.js";
 import { PolicyEngine } from "./agent/policy-engine.js";
 import { SpendTracker } from "./agent/spend-tracker.js";
 import { createDefaultRules } from "./agent/policy-rules/index.js";
+import { startDashboardServer } from "./dashboard/server.js";
 import type { AutomatonIdentity, AgentState, Skill, SocialClientInterface } from "./types.js";
 import { DEFAULT_TREASURY_POLICY } from "./types.js";
 import { createLogger, setGlobalLogLevel, StructuredLogger } from "./observability/logger.js";
@@ -48,6 +49,14 @@ async function main(): Promise<void> {
   if (args.includes("--version") || args.includes("-v")) {
     logger.info(`Conway Automaton v${VERSION}`);
     process.exit(0);
+  }
+
+  if (args.includes("--dashboard")) {
+    const portIndex = args.indexOf("--port");
+    const customPort = portIndex !== -1 ? Number(args[portIndex + 1]) : 8386;
+    startDashboardServer({ port: customPort });
+    logger.info(`Web Dashboard active standalone at http://localhost:${customPort}`);
+    return;
   }
 
   if (args.includes("--help") || args.includes("-h")) {
@@ -368,9 +377,22 @@ async function run(): Promise<void> {
   heartbeat.start();
   logger.info(`[${new Date().toISOString()}] Heartbeat daemon started.`);
 
+  // Start Web Dashboard on port 8386 (or DASHBOARD_PORT)
+  let dashboardHandle: { close: () => Promise<void> } | undefined;
+  try {
+    const dashboardPort = Number(process.env.DASHBOARD_PORT) || 8386;
+    dashboardHandle = startDashboardServer({ port: dashboardPort });
+    logger.info(`[${new Date().toISOString()}] Web Dashboard active at http://localhost:${dashboardPort}`);
+  } catch (dashErr: any) {
+    logger.warn(`Failed to start Web Dashboard: ${dashErr.message}`);
+  }
+
   // Handle graceful shutdown
   const shutdown = () => {
     logger.info(`[${new Date().toISOString()}] Shutting down...`);
+    if (dashboardHandle) {
+      dashboardHandle.close().catch(() => {});
+    }
     heartbeat.stop();
     db.setAgentState("sleeping");
     db.close();
