@@ -226,7 +226,26 @@ export class InferenceRouter {
       }
     }
 
-    return null;
+    // 3. Fallback to default 9Router cx/gpt-6-luna
+    const fallbackLuna: ModelEntry = {
+      modelId: "cx/gpt-6-luna",
+      provider: "openai",
+      displayName: "GPT-6 Luna (9Router)",
+      tierMinimum: "dead",
+      costPer1kInput: 0,
+      costPer1kOutput: 0,
+      maxTokens: 16384,
+      contextWindow: 128000,
+      supportsTools: true,
+      supportsVision: true,
+      parameterStyle: "max_tokens" as const,
+      enabled: true,
+      lastSeen: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    return fallbackLuna;
   }
 
   /**

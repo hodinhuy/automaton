@@ -196,11 +196,20 @@ async function run(): Promise<void> {
   // Load wallet (chain-aware)
   const { account, chainIdentity, chainType: walletChainType } = await getWallet();
   const resolvedChainType = config.chainType || walletChainType || "evm";
-  const apiKey = config.conwayApiKey || loadApiKeyFromConfig();
-  if (!apiKey) {
-    logger.error("No API key found. Run: automaton --provision");
-    process.exit(1);
+
+  if (config.openaiBaseUrl && !process.env.OPENAI_BASE_URL) {
+    process.env.OPENAI_BASE_URL = config.openaiBaseUrl;
   }
+  if (config.openaiApiKey && !process.env.OPENAI_API_KEY) {
+    process.env.OPENAI_API_KEY = config.openaiApiKey;
+  }
+
+  const apiKey =
+    config.conwayApiKey ||
+    loadApiKeyFromConfig() ||
+    process.env.OPENAI_API_KEY ||
+    config.openaiApiKey ||
+    "self-hosted-local-key";
 
   // Initialize database
   const dbPath = resolvePath(config.dbPath);
@@ -285,12 +294,13 @@ async function run(): Promise<void> {
   const modelRegistry = new ModelRegistry(db.raw);
   modelRegistry.initialize();
   const inference = createInferenceClient({
-    apiUrl: config.conwayApiUrl,
+    apiUrl: config.conwayApiUrl || config.openaiBaseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
     apiKey,
-    defaultModel: config.inferenceModel,
+    defaultModel: config.inferenceModel || "cx/gpt-6-luna",
     maxTokens: config.maxTokensPerTurn,
-    lowComputeModel: config.modelStrategy?.lowComputeModel || "gpt-5-mini",
-    openaiApiKey: config.openaiApiKey,
+    lowComputeModel: config.modelStrategy?.lowComputeModel || "cx/gpt-6-luna",
+    openaiBaseUrl: config.openaiBaseUrl || process.env.OPENAI_BASE_URL,
+    openaiApiKey: config.openaiApiKey || process.env.OPENAI_API_KEY,
     anthropicApiKey: config.anthropicApiKey,
     ollamaBaseUrl,
     getModelProvider: (modelId) => modelRegistry.get(modelId)?.provider,
@@ -336,37 +346,8 @@ async function run(): Promise<void> {
     logger.warn(`[${new Date().toISOString()}] State repo init failed: ${err.message}`);
   }
 
-  // Bootstrap topup: buy minimum credits ($5) from USDC so the agent can start.
-  // The agent decides larger topups itself via the topup_credits tool.
-  try {
-    let bootstrapTimer: ReturnType<typeof setTimeout>;
-    const bootstrapTimeout = new Promise<null>((_, reject) => {
-      bootstrapTimer = setTimeout(() => reject(new Error("bootstrap topup timed out")), 15_000);
-    });
-    try {
-      await Promise.race([
-        (async () => {
-          const creditsCents = await conway.getCreditsBalance().catch(() => 0);
-          const topupResult = await bootstrapTopup({
-            apiUrl: config.conwayApiUrl,
-            account,
-            creditsCents,
-            chainType: resolvedChainType,
-          });
-          if (topupResult?.success) {
-            logger.info(
-              `[${new Date().toISOString()}] Bootstrap topup: +$${topupResult.amountUsd} credits from USDC`,
-            );
-          }
-        })(),
-        bootstrapTimeout,
-      ]);
-    } finally {
-      clearTimeout(bootstrapTimer!);
-    }
-  } catch (err: any) {
-    logger.warn(`[${new Date().toISOString()}] Bootstrap topup skipped: ${err.message}`);
-  }
+  // Bootstrap topup: skipped in self-hosted Landlord-Tenant mode
+  logger.info(`[${new Date().toISOString()}] Self-hosted Landlord-Tenant mode: credit balance managed locally.`);
 
   // Start heartbeat daemon (Phase 1.1: DurableScheduler)
   const heartbeat = createHeartbeatDaemon({

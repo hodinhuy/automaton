@@ -6,15 +6,17 @@
  * The automaton's entire identity history is version-controlled and replayable.
  */
 
+import fs from "fs";
+import path from "path";
 import type { ConwayClient, AutomatonDatabase } from "../types.js";
 import { gitInit, gitCommit, gitStatus, gitLog } from "./tools.js";
 
 const AUTOMATON_DIR = "~/.automaton";
 
 function resolveHome(p: string): string {
-  const home = process.env.HOME || "/root";
+  const home = process.env.USERPROFILE || process.env.HOME || "/root";
   if (p.startsWith("~")) {
-    return `${home}${p.slice(1)}`;
+    return path.join(home, p.slice(1));
   }
   return p;
 }
@@ -29,12 +31,7 @@ export async function initStateRepo(
   const dir = resolveHome(AUTOMATON_DIR);
 
   // Check if already initialized
-  const checkResult = await conway.exec(
-    `test -d ${dir}/.git && echo "exists" || echo "nope"`,
-    5000,
-  );
-
-  if (checkResult.stdout.trim() === "exists") {
+  if (fs.existsSync(path.join(dir, ".git"))) {
     return;
   }
 
@@ -57,7 +54,11 @@ logs/
 
   // Configure git user
   await conway.exec(
-    `cd ${dir} && git config user.name "Automaton" && git config user.email "automaton@conway.tech"`,
+    `git -C "${dir}" config user.name "Automaton"`,
+    5000,
+  );
+  await conway.exec(
+    `git -C "${dir}" config user.email "automaton@conway.tech"`,
     5000,
   );
 

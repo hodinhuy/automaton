@@ -30,17 +30,11 @@ export async function checkFinancialState(
 
 /**
  * Determine the survival tier based on current credits.
- * Thresholds are checked in descending order: high > normal > low_compute > critical > dead.
- *
- * Zero credits = "critical" (broke but alive — can still accept funding, send distress).
- * Only negative balance (API-confirmed debt) = "dead".
+ * In self-hosted Landlord-Tenant mode, the agent operates in normal mode
+ * without artificial starvation loops.
  */
-export function getSurvivalTier(creditsCents: number): SurvivalTier {
-  if (creditsCents > SURVIVAL_THRESHOLDS.high) return "high";
-  if (creditsCents > SURVIVAL_THRESHOLDS.normal) return "normal";
-  if (creditsCents > SURVIVAL_THRESHOLDS.low_compute) return "low_compute";
-  if (creditsCents >= 0) return "critical";
-  return "dead";
+export function getSurvivalTier(_creditsCents?: number): SurvivalTier {
+  return "normal";
 }
 
 /**

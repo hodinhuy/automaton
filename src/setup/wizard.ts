@@ -96,11 +96,20 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
   const creatorAddress = await promptAddress(creatorAddressLabel, walletChainType);
   console.log(chalk.green(`  Creator: ${creatorAddress}\n`));
 
-  console.log(chalk.white("  Optional: bring your own inference provider keys (press Enter to skip)."));
-  const openaiApiKey = await promptOptional("OpenAI API key (sk-..., optional)");
-  if (openaiApiKey && !openaiApiKey.startsWith("sk-")) {
-    console.log(chalk.yellow("  Warning: OpenAI keys usually start with sk-. Saving anyway."));
-  }
+  console.log(chalk.white("  Inference Gateway / Provider configuration:"));
+  const defaultGateway = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+  const openaiBaseUrlInput = await promptOptional(
+    `OpenAI-compatible Gateway Base URL [${defaultGateway}]`
+  );
+  const openaiBaseUrl = openaiBaseUrlInput || defaultGateway;
+  console.log(chalk.green(`  Gateway Base URL: ${openaiBaseUrl}`));
+
+  const openaiApiKey = await promptOptional("API Key for Gateway / OpenAI (optional)");
+
+  const defaultModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const modelInput = await promptOptional(`Model name [${defaultModel}]`);
+  const inferenceModel = modelInput || defaultModel;
+  console.log(chalk.green(`  Model: ${inferenceModel}\n`));
 
   const anthropicApiKey = await promptOptional("Anthropic API key (sk-ant-..., optional)");
   if (anthropicApiKey && !anthropicApiKey.startsWith("sk-ant-")) {
@@ -113,15 +122,13 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
     console.log(chalk.green(`  Ollama URL saved: ${ollamaBaseUrl}`));
   }
 
-  if (openaiApiKey || anthropicApiKey || ollamaBaseUrl) {
+  if (openaiApiKey || anthropicApiKey || ollamaBaseUrl || openaiBaseUrl) {
     const providers = [
-      openaiApiKey ? "OpenAI" : null,
+      openaiBaseUrl ? `Gateway (${openaiBaseUrl})` : null,
       anthropicApiKey ? "Anthropic" : null,
       ollamaBaseUrl ? "Ollama" : null,
     ].filter(Boolean).join(", ");
     console.log(chalk.green(`  Provider keys/URLs saved: ${providers}\n`));
-  } else {
-    console.log(chalk.dim("  No provider keys set. Inference will default to Conway.\n"));
   }
 
   // ─── Financial Safety Policy ─────────────────────────────────
@@ -170,7 +177,9 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
     sandboxId: env.sandboxId,
     walletAddress,
     apiKey,
+    openaiBaseUrl: openaiBaseUrl || undefined,
     openaiApiKey: openaiApiKey || undefined,
+    inferenceModel,
     anthropicApiKey: anthropicApiKey || undefined,
     ollamaBaseUrl,
     treasuryPolicy,

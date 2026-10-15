@@ -75,6 +75,11 @@ export class LocalWorkerPool {
       })
       .finally(() => {
         this.activeWorkers.delete(workerId);
+        try {
+          this.config.db.prepare("UPDATE children SET status = 'failed' WHERE sandbox_id = ? AND status = 'running'").run(workerId);
+        } catch {
+          // ignore
+        }
       });
 
     this.activeWorkers.set(workerId, { promise: workerPromise, abortController });
@@ -147,6 +152,9 @@ export class LocalWorkerPool {
 
       if (result.success) {
         completeTask(this.config.db, task.id, result);
+        try {
+          this.config.db.prepare("UPDATE children SET status = 'dead' WHERE sandbox_id = ?").run(workerId);
+        } catch {}
         logger.info("Local worker completed task", {
           workerId,
           taskId: task.id,
@@ -156,6 +164,9 @@ export class LocalWorkerPool {
         });
       } else {
         failTask(this.config.db, task.id, result.output || "Task reported failure", true);
+        try {
+          this.config.db.prepare("UPDATE children SET status = 'failed' WHERE sandbox_id = ?").run(workerId);
+        } catch {}
         logger.warn("Local worker reported task failure", {
           workerId,
           taskId: task.id,

@@ -42,7 +42,7 @@ function createSolanaStubAccount(solanaAddress: string): PrivateKeyAccount {
 }
 
 const AUTOMATON_DIR = path.join(
-  process.env.HOME || "/root",
+  process.env.USERPROFILE || process.env.HOME || "/root",
   ".automaton",
 );
 const WALLET_FILE = path.join(AUTOMATON_DIR, "wallet.json");

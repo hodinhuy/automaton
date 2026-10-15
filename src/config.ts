@@ -106,7 +106,7 @@ export function saveConfig(config: AutomatonConfig): void {
  */
 export function resolvePath(p: string): string {
   if (p.startsWith("~")) {
-    return path.join(process.env.HOME || "/root", p.slice(1));
+    return path.join(process.env.USERPROFILE || process.env.HOME || "/root", p.slice(1));
   }
   return p;
 }
@@ -123,9 +123,11 @@ export function createConfig(params: {
   sandboxId: string;
   walletAddress: string;
   apiKey: string;
+  openaiBaseUrl?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
   ollamaBaseUrl?: string;
+  inferenceModel?: string;
   parentAddress?: string;
   treasuryPolicy?: TreasuryPolicy;
   chainType?: ChainType;
@@ -139,12 +141,13 @@ export function createConfig(params: {
     registeredWithConway: params.registeredWithConway,
     sandboxId: normalizedSandboxId,
     conwayApiUrl:
-      DEFAULT_CONFIG.conwayApiUrl || "https://api.conway.tech",
+      params.openaiBaseUrl || DEFAULT_CONFIG.conwayApiUrl || "https://api.openai.com/v1",
     conwayApiKey: params.apiKey,
+    openaiBaseUrl: params.openaiBaseUrl || DEFAULT_CONFIG.openaiBaseUrl || "https://api.openai.com/v1",
     openaiApiKey: params.openaiApiKey,
     anthropicApiKey: params.anthropicApiKey,
     ollamaBaseUrl: params.ollamaBaseUrl,
-    inferenceModel: DEFAULT_CONFIG.inferenceModel || "gpt-5.2",
+    inferenceModel: params.inferenceModel || DEFAULT_CONFIG.inferenceModel || "gpt-4o-mini",
     maxTokensPerTurn: DEFAULT_CONFIG.maxTokensPerTurn || 4096,
     heartbeatConfigPath:
       DEFAULT_CONFIG.heartbeatConfigPath || "~/.automaton/heartbeat.yml",

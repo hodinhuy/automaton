@@ -49,6 +49,7 @@ export interface AutomatonConfig {
   sandboxId: string;
   conwayApiUrl: string;
   conwayApiKey: string;
+  openaiBaseUrl?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
   ollamaBaseUrl?: string;
@@ -78,8 +79,9 @@ export interface AutomatonConfig {
 }
 
 export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
-  conwayApiUrl: "https://api.conway.tech",
-  inferenceModel: "gpt-5.2",
+  conwayApiUrl: "https://api.openai.com/v1",
+  openaiBaseUrl: "https://api.openai.com/v1",
+  inferenceModel: "gpt-4o-mini",
   maxTokensPerTurn: 4096,
   heartbeatConfigPath: "~/.automaton/heartbeat.yml",
   dbPath: "~/.automaton/state.db",
@@ -89,7 +91,7 @@ export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
   maxChildren: 3,
   maxTurnsPerCycle: 25,
   childSandboxMemoryMb: 1024,
-  socialRelayUrl: "https://social.conway.tech",
+  socialRelayUrl: undefined,
 };
 
 // ─── Agent State ─────────────────────────────────────────────────
@@ -355,6 +357,7 @@ export interface InferenceToolDefinition {
 // ─── Conway Client ───────────────────────────────────────────────
 
 export interface ConwayClient {
+  isLocal?: boolean;
   exec(command: string, timeout?: number): Promise<ExecResult>;
   writeFile(path: string, content: string): Promise<void>;
   readFile(path: string): Promise<string>;

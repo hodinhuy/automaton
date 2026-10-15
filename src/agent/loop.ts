@@ -142,31 +142,30 @@ export async function runAgentLoop(
       if (config.anthropicApiKey && !process.env.ANTHROPIC_API_KEY) {
         process.env.ANTHROPIC_API_KEY = config.anthropicApiKey;
       }
-      // Conway Compute API is OpenAI-compatible. Use it as fallback when no
-      // direct OpenAI key is available. The conwayApiKey is always present
-      // (required for sandbox operations), so this ensures the orchestrator
-      // can always make inference calls.
-      if (config.conwayApiKey && !process.env.CONWAY_API_KEY) {
-        process.env.CONWAY_API_KEY = config.conwayApiKey;
+      if (!process.env.OPENAI_BASE_URL) {
+        process.env.OPENAI_BASE_URL = config.openaiBaseUrl || config.conwayApiUrl || "https://api.openai.com/v1";
       }
-      // If no OpenAI key is set but Conway key is available, use Conway as
-      // the OpenAI provider (Conway Compute is OpenAI API-compatible).
-      if (!process.env.OPENAI_API_KEY && config.conwayApiKey) {
-        process.env.OPENAI_API_KEY = config.conwayApiKey;
-        process.env.OPENAI_BASE_URL = `${config.conwayApiUrl}/v1`;
+      if (!process.env.OPENAI_API_KEY) {
+        process.env.OPENAI_API_KEY = config.openaiApiKey || config.conwayApiKey || "sk-no-key-required";
       }
 
       const providersPath = path.join(
-        process.env.HOME || process.cwd(),
+        process.env.USERPROFILE || process.env.HOME || process.cwd(),
         ".automaton",
         "inference-providers.json",
       );
       const registry = ProviderRegistry.fromConfig(providersPath);
 
-      // If OPENAI_BASE_URL was set (Conway fallback), update the default
-      // provider's baseUrl so the OpenAI client points to Conway Compute.
-      if (process.env.OPENAI_BASE_URL) {
-        registry.overrideBaseUrl("openai", process.env.OPENAI_BASE_URL);
+      // Point the default provider to Gateway
+      const gatewayUrl =
+        process.env.OPENAI_BASE_URL ||
+        config.openaiBaseUrl ||
+        config.conwayApiUrl ||
+        "https://api.openai.com/v1";
+      registry.overrideBaseUrl("openai", gatewayUrl);
+
+      if (config.openaiApiKey && !process.env.OPENAI_API_KEY) {
+        process.env.OPENAI_API_KEY = config.openaiApiKey;
       }
 
       const unifiedInference = new UnifiedInferenceClient(registry);
@@ -200,6 +199,14 @@ export async function runAgentLoop(
       });
       workerPool = initializedWorkerPool;
 
+      if (conway.isLocal) {
+        // In local mode, previous in-process workers die on process restart.
+        // Mark stale running children as failed so orchestrator can cleanly respawn them.
+        db.raw.prepare(
+          "UPDATE children SET status = 'failed' WHERE status IN ('running', 'healthy', 'spawning')",
+        ).run();
+      }
+
       orchestrator = new Orchestrator({
         db: db.raw,
         agentTracker,
@@ -211,6 +218,10 @@ export async function runAgentLoop(
           if (address.startsWith("local://")) {
             return initializedWorkerPool.hasWorker(address);
           }
+          if (conway.isLocal) {
+            // In self-hosted local mode, workers are purely in-process local workers
+            return false;
+          }
           // Remote workers: check children table
           const child = db.raw.prepare(
             "SELECT status FROM children WHERE sandbox_id = ? OR address = ?",
@@ -221,6 +232,34 @@ export async function runAgentLoop(
         config: {
           ...config,
           spawnAgent: async (task: any) => {
+            // In self-hosted local mode, spawn in-process local worker directly
+            if (conway.isLocal) {
+              logger.info(`[ORCHESTRATOR] Spawning in-process local worker for task "${task.title}"`, {
+                taskId: task.id,
+                role: task.agentRole ?? "generalist",
+              });
+              const spawned = initializedWorkerPool.spawn(task);
+              try {
+                db.raw.prepare(
+                  `INSERT OR REPLACE INTO children (id, name, address, sandbox_id, genesis_prompt, funded_amount_cents, status, created_at, role)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                ).run(
+                  spawned.sandboxId,
+                  spawned.name,
+                  spawned.address,
+                  spawned.sandboxId,
+                  `Role: ${task.agentRole ?? "generalist"} | Task: ${task.title}`,
+                  0,
+                  "running",
+                  new Date().toISOString(),
+                  task.agentRole ?? "generalist",
+                );
+              } catch (err: any) {
+                logger.warn(`Failed to record local worker in children table: ${err.message}`);
+              }
+              return spawned;
+            }
+
             // Try Conway sandbox spawn first (production)
             try {
               const { generateGenesisConfig } = await import("../replication/genesis.js");
@@ -944,68 +983,25 @@ let _lastKnownCredits = 0;
 let _lastKnownUsdc = 0;
 
 async function getFinancialState(
-  conway: ConwayClient,
-  address: string,
+  _conway: ConwayClient,
+  _address: string,
   db?: AutomatonDatabase,
-  chainType?: string,
+  _chainType?: string,
 ): Promise<FinancialState> {
-  let creditsCents = _lastKnownCredits;
-  let usdcBalance = _lastKnownUsdc;
-
-  try {
-    creditsCents = await conway.getCreditsBalance();
-    if (creditsCents > 0) _lastKnownCredits = creditsCents;
-  } catch (error) {
-    logger.error("Credits balance fetch failed", error instanceof Error ? error : undefined);
-    // Use last known balance from KV, not zero
-    if (db) {
-      const cached = db.getKV("last_known_balance");
-      if (cached) {
-        try {
-          const parsed = JSON.parse(cached);
-          logger.warn("Balance API failed, using cached balance");
-          return {
-            creditsCents: parsed.creditsCents ?? 0,
-            usdcBalance: parsed.usdcBalance ?? 0,
-            lastChecked: new Date().toISOString(),
-          };
-        } catch (parseError) {
-          logger.error("Failed to parse cached balance", parseError instanceof Error ? parseError : undefined);
-        }
-      }
-    }
-    // No cache available -- return conservative non-zero sentinel
-    logger.error("Balance API failed, no cache available");
-    return {
-      creditsCents: -1,
-      usdcBalance: -1,
-      lastChecked: new Date().toISOString(),
-    };
-  }
-
-  try {
-    const network = chainType === "solana" ? "solana:mainnet" : "eip155:8453";
-    usdcBalance = await getUsdcBalance(address, network, chainType as any);
-    if (usdcBalance > 0) _lastKnownUsdc = usdcBalance;
-  } catch (error) {
-    logger.error("USDC balance fetch failed", error instanceof Error ? error : undefined);
-  }
-
-  // Cache successful balance reads
+  let creditsCents = 10000;
   if (db) {
-    try {
-      db.setKV(
-        "last_known_balance",
-        JSON.stringify({ creditsCents, usdcBalance }),
-      );
-    } catch (error) {
-      logger.error("Failed to cache balance", error instanceof Error ? error : undefined);
+    const stored = db.getKV("landlord_credits_cents");
+    if (stored) {
+      const parsed = parseInt(stored, 10);
+      if (!isNaN(parsed)) creditsCents = parsed;
+    } else {
+      db.setKV("landlord_credits_cents", "10000");
     }
   }
 
   return {
     creditsCents,
-    usdcBalance,
+    usdcBalance: 100,
     lastChecked: new Date().toISOString(),
   };
 }

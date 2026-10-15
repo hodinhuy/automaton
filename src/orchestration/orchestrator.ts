@@ -540,6 +540,9 @@ export class Orchestrator {
             taskId: task.id,
             worker: task.assignedTo,
           });
+          if (task.assignedTo) {
+            this.params.agentTracker?.updateStatus(task.assignedTo, "failed");
+          }
           this.params.db.prepare(
             "UPDATE task_graph SET status = 'pending', assigned_to = NULL, started_at = NULL WHERE id = ?",
           ).run(task.id);

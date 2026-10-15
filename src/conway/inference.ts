@@ -24,6 +24,7 @@ interface InferenceClientOptions {
   defaultModel: string;
   maxTokens: number;
   lowComputeModel?: string;
+  openaiBaseUrl?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
   ollamaBaseUrl?: string;
@@ -48,13 +49,13 @@ function isLoopbackHttpUrl(url: string | undefined): boolean {
 export function createInferenceClient(
   options: InferenceClientOptions,
 ): InferenceClient {
-  const { apiUrl, apiKey, openaiApiKey, anthropicApiKey, ollamaBaseUrl, getModelProvider } = options;
+  const { apiUrl, apiKey, openaiBaseUrl, openaiApiKey, anthropicApiKey, ollamaBaseUrl, getModelProvider } = options;
   const httpClient = new ResilientHttpClient({
     baseTimeout: INFERENCE_TIMEOUT_MS,
     retryableStatuses: [429, 500, 502, 503, 504],
     allowHttpOnLoopback: isLoopbackHttpUrl(ollamaBaseUrl),
   });
-  let currentModel = options.defaultModel;
+  let currentModel = options.defaultModel || "cx/gpt-6-luna";
   let maxTokens = options.maxTokens;
 
   const chat = async (
@@ -110,14 +111,28 @@ export function createInferenceClient(
       });
     }
 
+    const defaultGatewayUrl =
+      process.env.OPENAI_BASE_URL ||
+      process.env.ROUTER_BASE_URL ||
+      openaiBaseUrl ||
+      apiUrl ||
+      "https://api.openai.com/v1";
+
+    const defaultGatewayKey =
+      process.env.OPENAI_API_KEY ||
+      process.env.ROUTER_API_KEY ||
+      openaiApiKey ||
+      apiKey ||
+      "sk-no-key-required";
+
     const openAiLikeApiUrl =
-      backend === "openai" ? "https://api.openai.com" :
+      backend === "openai" ? defaultGatewayUrl :
       backend === "ollama" ? (ollamaBaseUrl as string).replace(/\/$/, "") :
-      apiUrl;
+      defaultGatewayUrl;
     const openAiLikeApiKey =
-      backend === "openai" ? (openaiApiKey as string) :
+      backend === "openai" ? defaultGatewayKey :
       backend === "ollama" ? "ollama" :
-      apiKey;
+      defaultGatewayKey;
 
     return chatViaOpenAiCompatible({
       model,
@@ -135,16 +150,16 @@ export function createInferenceClient(
    */
   const setLowComputeMode = (enabled: boolean): void => {
     if (enabled) {
-      currentModel = options.lowComputeModel || "gpt-5-mini";
+      currentModel = options.lowComputeModel || options.defaultModel || "cx/gpt-6-luna";
       maxTokens = 4096;
     } else {
-      currentModel = options.defaultModel;
+      currentModel = options.defaultModel || "cx/gpt-6-luna";
       maxTokens = options.maxTokens;
     }
   };
 
   const getDefaultModel = (): string => {
-    return currentModel;
+    return currentModel || "cx/gpt-6-luna";
   };
 
   return {
@@ -188,16 +203,17 @@ function resolveInferenceBackend(
     const provider = keys.getModelProvider(model);
     if (provider === "ollama" && keys.ollamaBaseUrl) return "ollama";
     if (provider === "anthropic" && keys.anthropicApiKey) return "anthropic";
-    if (provider === "openai" && keys.openaiApiKey) return "openai";
-    if (provider === "conway") return "conway";
-    // provider unknown or key not configured — fall through to heuristics
+    if (provider === "openai" || provider === "conway") return "openai";
   }
 
   // Heuristic fallback (model not in registry yet)
   if (keys.anthropicApiKey && /^claude/i.test(model)) return "anthropic";
-  if (keys.openaiApiKey && /^(gpt-[3-9]|gpt-4|gpt-5|o[1-9][-\s.]|o[1-9]$|chatgpt)/i.test(model)) return "openai";
-  return "conway";
-
+  if (
+    model.startsWith("cx/") ||
+    model.startsWith("ag/") ||
+    /^(gpt-[3-9]|gpt-4|gpt-5|o[1-9][-\s.]|o[1-9]$|chatgpt|gemini)/i.test(model)
+  ) return "openai";
+  return "openai";
 }
 
 async function chatViaOpenAiCompatible(params: {
@@ -208,14 +224,21 @@ async function chatViaOpenAiCompatible(params: {
   backend: "conway" | "openai" | "ollama";
   httpClient: ResilientHttpClient;
 }): Promise<InferenceResponse> {
-  const resp = await params.httpClient.request(`${params.apiUrl}/v1/chat/completions`, {
+  const cleanBaseUrl = (params.apiUrl || "https://api.openai.com/v1")
+    .replace(/\/+$/, "")
+    .replace(/\/v1$/, "");
+  const endpoint = `${cleanBaseUrl}/v1/chat/completions`;
+
+  const authHeader =
+    params.apiKey.startsWith("Bearer ")
+      ? params.apiKey
+      : `Bearer ${params.apiKey}`;
+
+  const resp = await params.httpClient.request(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization:
-        params.backend === "openai" || params.backend === "ollama"
-          ? `Bearer ${params.apiKey}`
-          : params.apiKey,
+      Authorization: authHeader,
     },
     body: JSON.stringify(params.body),
     timeout: INFERENCE_TIMEOUT_MS,

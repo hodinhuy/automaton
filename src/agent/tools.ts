@@ -246,16 +246,52 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
     },
 
-    // ── Conway API Tools ──
+    // ── Conway / Landlord-Tenant Financial Tools ──
     {
       name: "check_credits",
-      description: "Check your current Conway compute credit balance.",
+      description: "Check your current virtual compute credit balance under Landlord-Tenant mode.",
       category: "conway",
       riskLevel: "safe",
       parameters: { type: "object", properties: {} },
       execute: async (_args, ctx) => {
-        const balance = await ctx.conway.getCreditsBalance();
-        return `Credit balance: $${(balance / 100).toFixed(2)} (${balance} cents)`;
+        const stored = ctx.db.getKV("landlord_credits_cents");
+        const balance = stored ? parseInt(stored, 10) : 10000;
+        return `Credit balance: $${(balance / 100).toFixed(2)} (${balance} cents) [Self-hosted Landlord-Tenant Mode]`;
+      },
+    },
+    {
+      name: "pay_rent_to_creator",
+      description: "Pay rent or remit earned profits to your Creator / Landlord.",
+      category: "financial",
+      riskLevel: "safe",
+      parameters: {
+        type: "object",
+        properties: {
+          amount_cents: {
+            type: "number",
+            description: "Amount in cents to pay to your Landlord (e.g. 500 = $5.00).",
+          },
+          note: {
+            type: "string",
+            description: "Note or reason for the payment (e.g., 'Monthly server rent', 'Profit share from task').",
+          },
+        },
+        required: ["amount_cents"],
+      },
+      execute: async (args, ctx) => {
+        const amountCents = Math.floor(Number(args.amount_cents) || 0);
+        if (amountCents <= 0) return "Invalid amount. Must be greater than 0 cents.";
+        const stored = ctx.db.getKV("landlord_credits_cents");
+        let balance = stored ? parseInt(stored, 10) : 10000;
+        if (balance < amountCents) {
+          return `Insufficient balance: $${(balance / 100).toFixed(2)} available, cannot pay $${(amountCents / 100).toFixed(2)}.`;
+        }
+        balance -= amountCents;
+        ctx.db.setKV("landlord_credits_cents", balance.toString());
+        const totalPaidStr = ctx.db.getKV("total_rent_paid_cents") || "0";
+        const totalPaid = (parseInt(totalPaidStr, 10) || 0) + amountCents;
+        ctx.db.setKV("total_rent_paid_cents", totalPaid.toString());
+        return `Successfully paid $${(amountCents / 100).toFixed(2)} to Landlord (${ctx.config.creatorAddress || "Creator"}). Remaining balance: $${(balance / 100).toFixed(2)}. Total rent paid to date: $${(totalPaid / 100).toFixed(2)}. Note: ${args.note || "N/A"}`;
       },
     },
     {
