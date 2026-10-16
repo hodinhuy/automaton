@@ -18,17 +18,12 @@ const GENERAL_WRAPPED_TOOL_ALLOWLIST = new Set([
   "expose_port",
   "remove_port",
   "check_credits",
-  "check_usdc_balance",
-  "transfer_credits",
+  "check_wallet_balance",
+  "withdraw_to_creator",
   "send_message",
   "list_models",
   "switch_model",
   "check_inference_spending",
-  "discover_agents",
-  "check_reputation",
-  "search_domains",
-  "register_domain",
-  "manage_dns",
   "list_skills",
   "git_status",
   "git_diff",
@@ -42,11 +37,9 @@ const GENERAL_WRAPPED_TOOL_ALLOWLIST = new Set([
   "note_about_agent",
   "review_memory",
   "forget",
-  "x402_fetch",
+  "web_fetch",
 ]);
-const GENERAL_SPEC_ALIAS_TARGETS = {
-  web_fetch: "x402_fetch",
-} as const;
+const GENERAL_SPEC_ALIAS_TARGETS: Record<string, string> = {};
 const NOOP_SPEND_TRACKER: SpendTrackerInterface = {
   recordSpend: () => {},
   getHourlySpend: () => 0,

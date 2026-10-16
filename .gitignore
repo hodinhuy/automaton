@@ -10,4 +10,6 @@ dist
 *.tgz
 .automaton/wallet.json
 .automaton/state.db
-public-value-artifact
+.codegraph
+.pytest_cache
+test

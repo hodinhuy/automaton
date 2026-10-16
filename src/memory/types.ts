@@ -52,8 +52,6 @@ const STRATEGIC_TOOLS = new Set([
   "edit_own_file",
   "modify_heartbeat",
   "spawn_child",
-  "register_erc8004",
-  "update_agent_card",
   "install_mcp_server",
   "update_soul",
 ]);
@@ -62,13 +60,11 @@ const PRODUCTIVE_TOOLS = new Set([
   "exec",
   "write_file",
   "read_file",
+  "web_fetch",
   "git_commit",
   "git_push",
   "install_npm_package",
-  "create_sandbox",
   "expose_port",
-  "register_domain",
-  "manage_dns",
   "install_skill",
   "create_skill",
   "save_procedure",
@@ -78,28 +74,24 @@ const PRODUCTIVE_TOOLS = new Set([
 const COMMUNICATION_TOOLS = new Set([
   "send_message",
   "check_social_inbox",
-  "give_feedback",
   "note_about_agent",
 ]);
 
 const MAINTENANCE_TOOLS = new Set([
   "check_credits",
-  "check_usdc_balance",
+  "check_wallet_balance",
+  "withdraw_to_creator",
   "system_synopsis",
   "heartbeat_ping",
-  "list_sandboxes",
   "list_skills",
   "list_children",
   "list_models",
-  "check_reputation",
   "git_status",
   "git_log",
   "git_diff",
   "review_memory",
   "recall_facts",
   "recall_procedure",
-  "discover_agents",
-  "search_domains",
 ]);
 
 const ERROR_KEYWORDS = ["error", "failed", "exception", "blocked", "denied"];

@@ -12,7 +12,7 @@ import type {
   ConwayClient,
   SurvivalTier,
 } from "../types.js";
-import { formatCredits } from "../conway/credits.js";
+import { formatCredits } from "../economy/credits.js";
 
 export interface FundingAttempt {
   strategy: string;

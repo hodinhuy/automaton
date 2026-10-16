@@ -48,7 +48,7 @@ export interface AutomatonConfig {
   registeredWithConway: boolean;
   sandboxId: string;
   conwayApiUrl: string;
-  conwayApiKey: string;
+  conwayApiKey?: string;
   openaiBaseUrl?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
@@ -76,6 +76,8 @@ export interface AutomatonConfig {
   rpcUrl?: string;
   /** Chain type for this automaton. Defaults to "evm" if absent. */
   chainType?: ChainType;
+  /** Telegram omnichannel configuration */
+  telegram?: import("./social/types.js").TelegramChannelConfig;
 }
 
 export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
@@ -163,7 +165,8 @@ export type ToolCategory =
   | "git"
   | "registry"
   | "replication"
-  | "memory";
+  | "memory"
+  | "social";
 
 export interface ToolContext {
   identity: AutomatonIdentity;
@@ -172,6 +175,7 @@ export interface ToolContext {
   conway: ConwayClient;
   inference: InferenceClient;
   social?: SocialClientInterface;
+  socialHub?: import("./social/hub.js").SocialConnectorHub;
 }
 
 export interface SocialClientInterface {

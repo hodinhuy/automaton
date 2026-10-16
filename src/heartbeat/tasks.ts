@@ -17,7 +17,7 @@ import type {
 } from "../types.js";
 import type { HealthMonitor as ColonyHealthMonitor } from "../orchestration/health-monitor.js";
 import { sanitizeInput } from "../agent/injection-defense.js";
-import { getSurvivalTier } from "../conway/credits.js";
+import { getSurvivalTier } from "../economy/credits.js";
 import { createLogger } from "../observability/logger.js";
 import { getMetrics } from "../observability/metrics.js";
 import { AlertEngine, createDefaultAlertRules } from "../observability/alerts.js";
@@ -76,14 +76,14 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
         address: taskCtx.identity.address,
         creditsCents: credits,
         fundingHint:
-          "Use credit transfer API from a creator runtime to top this wallet up.",
+          "Operating budget depleted. Please replenish API operating budget.",
         timestamp: new Date().toISOString(),
       };
       taskCtx.db.setKV("last_distress", JSON.stringify(distressPayload));
 
       return {
         shouldWake: true,
-        message: `Distress: ${tier}. Credits: $${(credits / 100).toFixed(2)}. Need funding.`,
+        message: `Operating budget notice: $${(credits / 100).toFixed(2)} remaining.`,
       };
     }
 
@@ -107,52 +107,32 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
   },
 
   check_usdc_balance: async (ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
-    // Use ctx.usdcBalance instead of calling getUsdcBalance()
     const balance = ctx.usdcBalance;
     const credits = ctx.creditBalance;
+    const now = new Date().toISOString();
+
+    const lastCheckRaw = taskCtx.db.getKV("last_usdc_check");
+    let prevBalance: number | null = null;
+    if (lastCheckRaw) {
+      try {
+        const parsed = JSON.parse(lastCheckRaw);
+        if (typeof parsed.balance === "number") prevBalance = parsed.balance;
+      } catch {}
+    }
 
     taskCtx.db.setKV("last_usdc_check", JSON.stringify({
       balance,
       credits,
-      timestamp: new Date().toISOString(),
+      timestamp: now,
     }));
 
-    const MIN_TOPUP_USD = 5;
-    if (balance >= MIN_TOPUP_USD && (ctx.survivalTier === "critical" || ctx.survivalTier === "dead")) {
-      // Cooldown: don't attempt more than once every 5 minutes to avoid
-      // hammering the payment endpoint on repeated ticks.
-      const AUTO_TOPUP_COOLDOWN_MS = 5 * 60 * 1000;
-      const lastAttempt = taskCtx.db.getKV("last_auto_topup_attempt");
-      if (lastAttempt && Date.now() - new Date(lastAttempt).getTime() < AUTO_TOPUP_COOLDOWN_MS) {
-        return { shouldWake: false };
-      }
-
-      taskCtx.db.setKV("last_auto_topup_attempt", new Date().toISOString());
-
-      const { bootstrapTopup } = await import("../conway/topup.js");
-      const result = await bootstrapTopup({
-        apiUrl: taskCtx.config.conwayApiUrl,
-        account: taskCtx.identity.account,
-        creditsCents: credits,
-        chainType: taskCtx.config.chainType || taskCtx.identity.chainType || "evm",
-      });
-
-      if (result?.success) {
-        logger.info(
-          `Auto-topup successful: $${result.amountUsd} USD → ${result.creditsCentsAdded} credit cents`,
-        );
-        return {
-          shouldWake: true,
-          message: `Auto-topped up $${result.amountUsd} in credits (was $${(credits / 100).toFixed(2)}). USDC remaining: ~$${(balance - result.amountUsd).toFixed(2)}.`,
-        };
-      }
-
-      // Topup failed — wake the agent so it can handle it manually
-      const errMsg = result?.error ?? "unknown error";
-      logger.warn(`Auto-topup failed: ${errMsg}`);
+    // Cashier detection: if balance increased, a client or supporter tipped/paid!
+    if (prevBalance !== null && balance > prevBalance) {
+      const delta = balance - prevBalance;
+      logger.info(`[CASHIER] Incoming payment detected: +$${delta.toFixed(4)} USDC (New balance: $${balance.toFixed(4)})`);
       return {
         shouldWake: true,
-        message: `Low credits ($${(credits / 100).toFixed(2)}) with USDC available ($${balance.toFixed(2)}) but auto-topup failed: ${errMsg}. Use topup_credits to retry.`,
+        message: `Incoming payment detected! Received +$${delta.toFixed(4)} USDC in your wallet. Current wallet balance: $${balance.toFixed(4)} USDC. You may acknowledge the client or remit earnings with withdraw_to_creator.`,
       };
     }
 

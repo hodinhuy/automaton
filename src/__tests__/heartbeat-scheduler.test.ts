@@ -367,7 +367,7 @@ describe("DurableScheduler", () => {
       expect(ctx.tickId).toBeTruthy();
       expect(ctx.startedAt).toBeInstanceOf(Date);
       expect(ctx.creditBalance).toBe(5_000);
-      expect(ctx.survivalTier).toBe("high");
+      expect(ctx.survivalTier).toBe("normal");
       expect(ctx.lowComputeMultiplier).toBe(4);
       expect(ctx.config).toBe(DEFAULT_HB_CONFIG);
       expect(ctx.db).toBe(rawDb);
@@ -385,9 +385,9 @@ describe("DurableScheduler", () => {
         DEFAULT_HB_CONFIG,
       );
 
-      // Should default to 0 credits (critical tier — zero is broke, not dead)
+      // Should default to 0 credits (normal tier in self-hosted mode)
       expect(ctx.creditBalance).toBe(0);
-      expect(ctx.survivalTier).toBe("critical");
+      expect(ctx.survivalTier).toBe("normal");
     });
   });
 

@@ -1,14 +1,10 @@
 /**
- * Conway API Client
+ * Agent Runtime Client
  *
- * Communicates with Conway's control plane for sandbox management,
- * credits, and infrastructure operations.
- * Adapted from @aiws/sdk patterns.
+ * Provides execution, file I/O, and sandbox management by interfacing
+ * with the underlying AgentRuntimeDriver (Docker container or Local process).
  */
 
-import { execSync } from "child_process";
-import fs from "fs";
-import nodePath from "path";
 import type {
   ConwayClient,
   ExecResult,
@@ -22,91 +18,23 @@ import type {
   DnsRecord,
   ModelInfo,
 } from "../types.js";
-import { ResilientHttpClient } from "./http-client.js";
-import { LocalProcessDriver } from "../runtime/local-driver.js";
-import type { AgentRuntimeDriver } from "../runtime/types.js";
+import { LocalProcessDriver } from "./local-driver.js";
+import type { AgentRuntimeDriver } from "./types.js";
 import { ulid } from "ulid";
-import { keccak256, toHex } from "viem";
-import type { Address, PrivateKeyAccount } from "viem";
-import { randomUUID } from "crypto";
+import type { PrivateKeyAccount } from "viem";
 import type { ChainType, ChainIdentity } from "../identity/chain.js";
 
-interface ConwayClientOptions {
-  apiUrl: string;
-  apiKey: string;
-  sandboxId: string;
+export interface RuntimeClientOptions {
+  apiUrl?: string;
+  apiKey?: string;
+  sandboxId?: string;
   runtimeDriver?: AgentRuntimeDriver;
 }
 
-export function createConwayClient(options: ConwayClientOptions): ConwayClient {
-  const { apiUrl, apiKey } = options;
-  // Normalize sandbox ID defensively so values like whitespace/"undefined"/"null"
-  // never produce malformed API paths such as /v1/sandboxes//exec.
+export type AgentRuntimeClient = ConwayClient;
+
+export function createRuntimeClient(options: RuntimeClientOptions = {}): AgentRuntimeClient {
   const sandboxId = normalizeSandboxId(options.sandboxId);
-  const httpClient = new ResilientHttpClient();
-
-  async function request(
-    method: string,
-    path: string,
-    body?: unknown,
-    requestOptions?: { idempotencyKey?: string; retries404?: number },
-  ): Promise<any> {
-    // Conway LB has an intermittent routing bug that returns 404 for valid
-    // sandbox endpoints. Retry 404s here (outside ResilientHttpClient) to
-    // avoid tripping the circuit breaker on transient routing failures.
-    const max404Retries = requestOptions?.retries404 ?? 3;
-    for (let attempt = 0; attempt <= max404Retries; attempt++) {
-      const resp = await httpClient.request(`${apiUrl}${path}`, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: apiKey,
-        },
-        body: body ? JSON.stringify(body) : undefined,
-        idempotencyKey: requestOptions?.idempotencyKey,
-      });
-
-      if (resp.status === 404 && attempt < max404Retries) {
-        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-        continue;
-      }
-
-      if (!resp.ok) {
-        const text = await resp.text();
-        const err: any = new Error(
-          `Conway API error: ${method} ${path} -> ${resp.status}: ${text}`,
-        );
-        err.status = resp.status;
-        err.responseText = text;
-        err.method = method;
-        err.path = path;
-        throw err;
-      }
-
-      return resp.headers.get("content-type")?.includes("application/json")
-        ? resp.json()
-        : resp.text();
-    }
-
-    throw new Error("Unreachable");
-  }
-
-  const canonicalizePayload = (payload: Record<string, string>): string => {
-    const sortedKeys = Object.keys(payload).sort();
-    const sorted: Record<string, string> = {};
-    for (const key of sortedKeys) {
-      sorted[key] = payload[key];
-    }
-    return JSON.stringify(sorted);
-  };
-
-  const hashIdentityPayload = (payload: Record<string, string>): `0x${string}` => {
-    const canonical = canonicalizePayload(payload);
-    return keccak256(toHex(canonical));
-  };
-
-
-  // ─── Runtime Driver (Local Process or Docker Container) ───
   const driver = options.runtimeDriver || new LocalProcessDriver();
 
   const exec = async (
@@ -151,11 +79,10 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
     return driver.listSandboxes();
   };
 
-  // ─── Credits (Self-hosted / Mock) ───────────────────────────
+  // ─── Self-hosted Operating Budget ────────────────────────────
 
   const getCreditsBalance = async (): Promise<number> => {
-    // 10000 cents = $100.00 mock balance. No HTTP calls to api.conway.tech.
-    return 10000;
+    return 10000; // $100 default budget
   };
 
   const getCreditsPricing = async (): Promise<PricingTier[]> => {
@@ -198,8 +125,6 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
       },
     };
   };
-
-  // ─── Domains (Self-hosted / Mock) ────────────────────────────
 
   const searchDomains = async (
     _query: string,
@@ -247,26 +172,15 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
     return;
   };
 
-  // ─── Model Discovery (Self-hosted / Mock) ─────────────────────
-
   const listModels = async (): Promise<ModelInfo[]> => {
-    return [
-      {
-        id: "cx/gpt-6-luna",
-        provider: "openai",
-        pricing: {
-          inputPerMillion: 0,
-          outputPerMillion: 0,
-        },
-      },
-    ];
+    return [];
   };
 
-  const createScopedClient = (targetSandboxId: string): ConwayClient => {
-    return createConwayClient({ apiUrl, apiKey, sandboxId: targetSandboxId, runtimeDriver: driver });
+  const createScopedClient = (targetSandboxId: string): AgentRuntimeClient => {
+    return createRuntimeClient({ sandboxId: targetSandboxId, runtimeDriver: driver });
   };
 
-  const client: ConwayClient = {
+  return {
     isLocal: driver.type === "local",
     exec,
     writeFile,
@@ -288,14 +202,10 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
     listModels,
     createScopedClient,
   };
-
-  // SECURITY: API credentials are NOT exposed on the client object.
-  // If child spawning or other modules need API configuration, pass it
-  // explicitly through a dedicated typed interface — never via dynamic getters
-  // that any code with a client reference could access.
-
-  return client;
 }
+
+// Backward-compatibility alias
+export const createConwayClient = createRuntimeClient;
 
 function normalizeSandboxId(value: string | null | undefined): string {
   const trimmed = (value || "").trim();

@@ -254,7 +254,7 @@ describe("Heartbeat Tasks", () => {
       const result = await BUILTIN_TASKS.heartbeat_ping(tickCtx, taskCtx);
 
       expect(result.shouldWake).toBe(true);
-      expect(result.message).toContain("Distress");
+      expect(result.message).toContain("Operating budget notice");
       const distress = db.getKV("last_distress");
       expect(distress).toBeDefined();
     });
@@ -274,14 +274,14 @@ describe("Heartbeat Tasks", () => {
       const result = await BUILTIN_TASKS.heartbeat_ping(tickCtx, taskCtx);
 
       expect(result.shouldWake).toBe(true);
-      expect(result.message).toContain("dead");
+      expect(result.message).toContain("Operating budget notice");
     });
   });
 
   // ─── check_credits ──────────────────────────────────────────
 
   describe("check_credits", () => {
-    it("does not wake when tier unchanged", async () => {
+    it("does not wake and records credit check in landlord_tenant mode", async () => {
       const tickCtx = createMockTickContext(db, {
         creditBalance: 10_000,
         survivalTier: "normal",
@@ -293,63 +293,22 @@ describe("Heartbeat Tasks", () => {
         conway,
       };
 
-      // Set previous tier to same
-      db.setKV("prev_credit_tier", "normal");
-
       const result = await BUILTIN_TASKS.check_credits(tickCtx, taskCtx);
 
       expect(result.shouldWake).toBe(false);
       const check = db.getKV("last_credit_check");
       expect(check).toBeDefined();
-    });
-
-    it("wakes when tier drops to critical", async () => {
-      const tickCtx = createMockTickContext(db, {
-        creditBalance: 50,
-        survivalTier: "critical",
-      });
-      const taskCtx: HeartbeatLegacyContext = {
-        identity: createTestIdentity(),
-        config: createTestConfig(),
-        db,
-        conway,
-      };
-
-      // Previous tier was normal
-      db.setKV("prev_credit_tier", "normal");
-
-      const result = await BUILTIN_TASKS.check_credits(tickCtx, taskCtx);
-
-      expect(result.shouldWake).toBe(true);
-      expect(result.message).toContain("critical");
-    });
-
-    it("does not wake on first run (no previous tier)", async () => {
-      const tickCtx = createMockTickContext(db, {
-        creditBalance: 50,
-        survivalTier: "critical",
-      });
-      const taskCtx: HeartbeatLegacyContext = {
-        identity: createTestIdentity(),
-        config: createTestConfig(),
-        db,
-        conway,
-      };
-
-      // No previous tier set
-      const result = await BUILTIN_TASKS.check_credits(tickCtx, taskCtx);
-
-      expect(result.shouldWake).toBe(false);
+      expect(JSON.parse(check!).mode).toBe("landlord_tenant");
     });
   });
 
   // ─── check_usdc_balance ─────────────────────────────────────
 
   describe("check_usdc_balance", () => {
-    it("does not wake when no USDC and enough credits", async () => {
+    it("does not wake when balance is unchanged or initial", async () => {
       const tickCtx = createMockTickContext(db, {
         creditBalance: 10_000,
-        usdcBalance: 0,
+        usdcBalance: 10.0,
       });
       const taskCtx: HeartbeatLegacyContext = {
         identity: createTestIdentity(),
@@ -363,11 +322,18 @@ describe("Heartbeat Tasks", () => {
       expect(result.shouldWake).toBe(false);
     });
 
-    it("wakes when has USDC but critically low credits", async () => {
+    it("wakes when incoming tip/payment is detected (balance increased)", async () => {
+      // Simulate previous balance of 10 USDC
+      db.setKV("last_usdc_check", JSON.stringify({
+        balance: 10.0,
+        credits: 10000,
+        timestamp: new Date().toISOString(),
+      }));
+
+      // Current balance increased to 25 USDC (+15 tip)
       const tickCtx = createMockTickContext(db, {
-        creditBalance: 0, // critical tier
-        usdcBalance: 10.0, // > 5
-        survivalTier: "critical",
+        creditBalance: 10_000,
+        usdcBalance: 25.0,
       });
       const taskCtx: HeartbeatLegacyContext = {
         identity: createTestIdentity(),
@@ -379,24 +345,8 @@ describe("Heartbeat Tasks", () => {
       const result = await BUILTIN_TASKS.check_usdc_balance(tickCtx, taskCtx);
 
       expect(result.shouldWake).toBe(true);
-      expect(result.message).toContain("USDC");
-    });
-
-    it("does not wake when USDC below threshold", async () => {
-      const tickCtx = createMockTickContext(db, {
-        creditBalance: 200,
-        usdcBalance: 3.0, // < 5
-      });
-      const taskCtx: HeartbeatLegacyContext = {
-        identity: createTestIdentity(),
-        config: createTestConfig(),
-        db,
-        conway,
-      };
-
-      const result = await BUILTIN_TASKS.check_usdc_balance(tickCtx, taskCtx);
-
-      expect(result.shouldWake).toBe(false);
+      expect(result.message).toContain("Incoming payment detected");
+      expect(result.message).toContain("+$15.0000 USDC");
     });
   });
 

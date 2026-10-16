@@ -203,3 +203,85 @@ export function getWalletChainType(): ChainType {
 export function walletExists(): boolean {
   return fs.existsSync(WALLET_FILE);
 }
+
+// ─── Balance Checking (Cashier Wallet) ─────────────────────────
+
+import { createPublicClient, http, type Address } from "viem";
+import { base } from "viem/chains";
+
+const SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const BASE_USDC_ADDRESS: Address = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+
+const BALANCE_OF_ABI = [
+  {
+    inputs: [{ name: "account", type: "address" }],
+    name: "balanceOf",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const;
+
+/**
+ * Get the USDC balance for the automaton's wallet.
+ * Supports both EVM (Base) and Solana networks.
+ */
+export async function getUsdcBalance(
+  address: string,
+  network: string = "eip155:8453",
+  chainType?: ChainType,
+): Promise<number> {
+  if (chainType === "solana" || network === "solana:mainnet") {
+    return getSolanaUsdcBalance(address);
+  }
+
+  try {
+    const publicClient = createPublicClient({
+      chain: base,
+      transport: http(),
+    });
+
+    const balanceBigInt = await publicClient.readContract({
+      address: BASE_USDC_ADDRESS,
+      abi: BALANCE_OF_ABI,
+      functionName: "balanceOf",
+      args: [address as Address],
+    });
+
+    return Number(balanceBigInt) / 1_000_000;
+  } catch (err: any) {
+    return 0;
+  }
+}
+
+async function getSolanaUsdcBalance(address: string): Promise<number> {
+  try {
+    const { Connection, PublicKey } = await import("@solana/web3.js");
+    const rpcUrl = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
+    const connection = new Connection(rpcUrl, "confirmed");
+    const ownerPubkey = new PublicKey(address);
+    const mintPubkey = new PublicKey(SOLANA_USDC_MINT);
+
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+      ownerPubkey,
+      { mint: mintPubkey },
+    );
+
+    if (tokenAccounts.value.length === 0) {
+      return 0;
+    }
+
+    let totalBalance = 0;
+    for (const account of tokenAccounts.value) {
+      const parsed = account.account.data.parsed;
+      if (parsed?.info?.tokenAmount?.uiAmount != null) {
+        totalBalance += parsed.info.tokenAmount.uiAmount;
+      }
+    }
+
+    return totalBalance;
+  } catch (err: any) {
+    return 0;
+  }
+}
+

@@ -4,7 +4,6 @@ import chalk from "chalk";
 import type { AutomatonConfig, TreasuryPolicy } from "../types.js";
 import { DEFAULT_TREASURY_POLICY } from "../types.js";
 import { getWallet, getAutomatonDir } from "../identity/wallet.js";
-import { provision } from "../identity/provision.js";
 import { createConfig, saveConfig } from "../config.js";
 import { writeDefaultHeartbeatConfig } from "../heartbeat/config.js";
 import { showBanner } from "./banner.js";
@@ -14,6 +13,8 @@ import {
   promptAddress,
   promptOptional,
   promptWithDefault,
+  promptYesNo,
+  promptChoice,
   closePrompts,
 } from "./prompts.js";
 import { detectEnvironment } from "./environment.js";
@@ -26,7 +27,7 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
   console.log(chalk.white("  First-run setup. Let's bring your automaton to life.\n"));
 
   // ─── 1. Chain selection + wallet ──────────────────────────────
-  console.log(chalk.cyan("  [1/6] Chain selection & identity (wallet)..."));
+  console.log(chalk.cyan("  [1/7] Chain selection & identity (wallet)..."));
   let selectedChain: ChainType = "evm";
   const chainInput = await promptOptional("Chain type (evm or solana) [evm]");
   if (chainInput && chainInput.toLowerCase() === "solana") {
@@ -45,71 +46,33 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
   }
   console.log(chalk.dim(`  Private key stored at: ${getAutomatonDir()}/wallet.json\n`));
 
-  // ─── 2. Provision API key ─────────────────────────────────────
-  const provisionLabel = walletChainType === "solana"
-    ? "  [2/6] Provisioning Conway API key (SIWS)..."
-    : "  [2/6] Provisioning Conway API key (SIWE)...";
-  console.log(chalk.cyan(provisionLabel));
-  let apiKey = "";
-  try {
-    const result = await provision(undefined, walletChainType === "solana" ? chainIdentity : undefined);
-    apiKey = result.apiKey;
-    console.log(chalk.green(`  API key provisioned: ${result.keyPrefix}...\n`));
-  } catch (err: any) {
-    console.log(chalk.yellow(`  Auto-provision failed: ${err.message}`));
-    console.log(chalk.yellow("  You can enter a key manually, or press Enter to skip.\n"));
-    const manual = await promptOptional("Conway API key (cnwy_k_..., optional)");
-    if (manual) {
-      apiKey = manual;
-      // Save to config.json for loadApiKeyFromConfig()
-      const configDir = getAutomatonDir();
-      if (!fs.existsSync(configDir)) {
-        fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
-      }
-      fs.writeFileSync(
-        path.join(configDir, "config.json"),
-        JSON.stringify({ apiKey, walletAddress: walletAddress, provisionedAt: new Date().toISOString() }, null, 2),
-        { mode: 0o600 },
-      );
-      console.log(chalk.green("  API key saved.\n"));
-    }
-  }
-
-  if (!apiKey) {
-    console.log(chalk.yellow("  No API key set. The automaton will have limited functionality.\n"));
-  }
-
-  // ─── 3. Interactive questions ─────────────────────────────────
-  console.log(chalk.cyan("  [3/6] Setup questions\n"));
-
-  const name = await promptRequired("What do you want to name your automaton?");
-  console.log(chalk.green(`  Name: ${name}\n`));
-
-  const genesisPrompt = await promptMultiline("Enter the genesis prompt (system prompt) for your automaton.");
-  console.log(chalk.green(`  Genesis prompt set (${genesisPrompt.length} chars)\n`));
-
-  console.log(chalk.dim(`  Your automaton's address is ${walletAddress}`));
-  console.log(chalk.dim("  Now enter YOUR wallet address (the human creator/owner).\n"));
-  const creatorAddressLabel = walletChainType === "solana"
-    ? "Creator wallet address (base58)"
-    : "Creator wallet address (0x...)";
-  const creatorAddress = await promptAddress(creatorAddressLabel, walletChainType);
-  console.log(chalk.green(`  Creator: ${creatorAddress}\n`));
-
-  console.log(chalk.white("  Inference Gateway / Provider configuration:"));
+  // ─── 2. Configure AI Model & Inference Provider ──────────────
+  console.log(chalk.cyan("  [2/7] AI Model & Inference Provider configuration..."));
+  const envOpenAiKey = process.env.OPENAI_API_KEY || "";
   const defaultGateway = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
-  const openaiBaseUrlInput = await promptOptional(
-    `OpenAI-compatible Gateway Base URL [${defaultGateway}]`
-  );
-  const openaiBaseUrl = openaiBaseUrlInput || defaultGateway;
-  console.log(chalk.green(`  Gateway Base URL: ${openaiBaseUrl}`));
 
-  const openaiApiKey = await promptOptional("API Key for Gateway / OpenAI (optional)");
+  const openaiApiKeyInput = await promptOptional(
+    envOpenAiKey ? `OpenAI / OpenRouter API key [Found in env]` : "OpenAI / OpenRouter API key (sk-...)"
+  );
+  const openaiApiKey = openaiApiKeyInput || envOpenAiKey || undefined;
+  if (openaiApiKey) {
+    console.log(chalk.green("  API key saved."));
+  } else {
+    console.log(chalk.yellow("  No API key provided yet. You can set it later via --configure or OPENAI_API_KEY."));
+  }
 
   const defaultModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
-  const modelInput = await promptOptional(`Model name [${defaultModel}]`);
+  const modelInput = await promptOptional(`Inference Model name [${defaultModel}]`);
   const inferenceModel = modelInput || defaultModel;
-  console.log(chalk.green(`  Model: ${inferenceModel}\n`));
+  console.log(chalk.green(`  Model: ${inferenceModel}`));
+
+  const openaiBaseUrlInput = await promptOptional(
+    `Gateway Base URL (e.g. https://openrouter.ai/api/v1) [${defaultGateway}]`
+  );
+  const openaiBaseUrl = openaiBaseUrlInput || defaultGateway;
+  if (openaiBaseUrl !== "https://api.openai.com/v1") {
+    console.log(chalk.green(`  Gateway Base URL: ${openaiBaseUrl}`));
+  }
 
   const anthropicApiKey = await promptOptional("Anthropic API key (sk-ant-..., optional)");
   if (anthropicApiKey && !anthropicApiKey.startsWith("sk-ant-")) {
@@ -121,15 +84,26 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
   if (ollamaBaseUrl) {
     console.log(chalk.green(`  Ollama URL saved: ${ollamaBaseUrl}`));
   }
+  console.log();
 
-  if (openaiApiKey || anthropicApiKey || ollamaBaseUrl || openaiBaseUrl) {
-    const providers = [
-      openaiBaseUrl ? `Gateway (${openaiBaseUrl})` : null,
-      anthropicApiKey ? "Anthropic" : null,
-      ollamaBaseUrl ? "Ollama" : null,
-    ].filter(Boolean).join(", ");
-    console.log(chalk.green(`  Provider keys/URLs saved: ${providers}\n`));
-  }
+  const apiKey = openaiApiKey || anthropicApiKey || "local-employee-key";
+
+  // ─── 3. Interactive questions ─────────────────────────────────
+  console.log(chalk.cyan("  [3/7] Employee Profile & Creator\n"));
+
+  const name = await promptRequired("What do you want to name your digital teammate?");
+  console.log(chalk.green(`  Name: ${name}\n`));
+
+  const genesisPrompt = await promptMultiline("Enter the genesis prompt (role, instructions, personality) for your teammate.");
+  console.log(chalk.green(`  Genesis prompt set (${genesisPrompt.length} chars)\n`));
+
+  console.log(chalk.dim(`  Your teammate's cashier wallet is ${walletAddress}`));
+  console.log(chalk.dim("  Enter YOUR wallet address (the human creator/manager to receive payouts/tips).\n"));
+  const creatorAddressLabel = walletChainType === "solana"
+    ? "Creator wallet address (base58)"
+    : "Creator wallet address (0x...)";
+  const creatorAddress = await promptAddress(creatorAddressLabel, walletChainType);
+  console.log(chalk.green(`  Creator: ${creatorAddress}\n`));
 
   // ─── Financial Safety Policy ─────────────────────────────────
   console.log(chalk.cyan("  Financial Safety Policy"));
@@ -157,8 +131,68 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
 
   console.log(chalk.green("  Treasury policy configured.\n"));
 
-  // ─── 4. Detect environment ────────────────────────────────────
-  console.log(chalk.cyan("  [4/6] Detecting environment..."));
+  // ─── 4. Communication Channels (Omnichannel) ─────────────────
+  console.log(chalk.cyan("  [4/7] Communication Channels (Omnichannel Setup)\n"));
+  console.log(chalk.dim("  Connect your digital employee to messaging channels (Telegram, Zalo, Discord).\n"));
+
+  let telegramConfig: import("../social/types.js").TelegramChannelConfig | undefined;
+  const enableTelegram = await promptYesNo("Enable Telegram channel?", true);
+
+  if (enableTelegram) {
+    console.log(chalk.white("\n  Select Telegram connection mode:"));
+    console.log(chalk.dim("    • 'bot'     : Official Bot API Token (from @BotFather) [Recommended for quick start]"));
+    console.log(chalk.dim("    • 'userbot' : Real User Account via MTProto (GramJS) [Acts as a human employee]\n"));
+
+    const mode = await promptChoice("Telegram mode", ["bot", "userbot"] as const, "bot");
+
+    if (mode === "bot") {
+      const tokenInput = await promptOptional("Telegram Bot Token (from @BotFather, press Enter to set in .env later)");
+      const creatorIdInput = await promptOptional("Your Telegram User ID (optional, to identify you as Admin/Creator)");
+
+      telegramConfig = {
+        enabled: true,
+        mode: "bot",
+        botToken: tokenInput || undefined,
+        creatorTelegramId: creatorIdInput || undefined,
+      };
+
+      if (tokenInput) {
+        console.log(chalk.green("  Telegram Bot configured."));
+      } else {
+        console.log(chalk.yellow("  No Bot Token provided yet. You can set TELEGRAM_BOT_TOKEN in .env anytime."));
+      }
+    } else {
+      console.log(chalk.dim("\n  Userbot requires TELEGRAM_API_ID, TELEGRAM_API_HASH, and TELEGRAM_SESSION_STRING."));
+      console.log(chalk.dim("  (Obtain API ID & Hash from https://my.telegram.org)\n"));
+
+      const apiIdInput = await promptOptional("Telegram API ID (optional, press Enter to set later)");
+      const apiHashInput = await promptOptional("Telegram API Hash (optional)");
+      const sessionInput = await promptOptional("Telegram Session String (optional)");
+      const creatorIdInput = await promptOptional("Your Telegram User ID (optional)");
+
+      telegramConfig = {
+        enabled: true,
+        mode: "userbot",
+        apiId: apiIdInput ? Number(apiIdInput) : undefined,
+        apiHash: apiHashInput || undefined,
+        sessionString: sessionInput || undefined,
+        creatorTelegramId: creatorIdInput || undefined,
+      };
+
+      if (!sessionInput) {
+        console.log(chalk.yellow("  Tip: Run 'pnpm tsx scripts/login-telegram.ts' after setup to generate your Session String."));
+      } else {
+        console.log(chalk.green("  Telegram Userbot session saved."));
+      }
+    }
+  } else {
+    console.log(chalk.dim("  Telegram channel skipped."));
+  }
+
+  console.log(chalk.dim("  (Note: Zalo, Discord, and Browser Agent channels can be added in subsequent updates)\n"));
+
+  // ─── 5. Detect environment ────────────────────────────────────
+  console.log(chalk.cyan("  [5/7] Detecting environment..."));
   const env = detectEnvironment();
   if (env.sandboxId) {
     console.log(chalk.green(`  Conway sandbox detected: ${env.sandboxId}\n`));
@@ -166,8 +200,8 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
     console.log(chalk.dim(`  Environment: ${env.type} (no sandbox detected)\n`));
   }
 
-  // ─── 5. Write config + heartbeat + SOUL.md + skills ───────────
-  console.log(chalk.cyan("  [5/6] Writing configuration..."));
+  // ─── 6. Write config + heartbeat + SOUL.md + skills ───────────
+  console.log(chalk.cyan("  [6/7] Writing configuration..."));
 
   const config = createConfig({
     name,
@@ -184,6 +218,7 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
     ollamaBaseUrl,
     treasuryPolicy,
     chainType: walletChainType,
+    telegram: telegramConfig,
   });
 
   saveConfig(config);
@@ -197,13 +232,25 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
   const constitutionSrc = path.join(process.cwd(), "constitution.md");
   const constitutionDst = path.join(automatonDir, "constitution.md");
   if (fs.existsSync(constitutionSrc)) {
+    if (fs.existsSync(constitutionDst)) {
+      try {
+        fs.chmodSync(constitutionDst, 0o666);
+      } catch {}
+    }
     fs.copyFileSync(constitutionSrc, constitutionDst);
-    fs.chmodSync(constitutionDst, 0o444); // read-only
+    try {
+      fs.chmodSync(constitutionDst, 0o444); // read-only
+    } catch {}
     console.log(chalk.green("  constitution.md installed (read-only)"));
   }
 
   // SOUL.md
   const soulPath = path.join(automatonDir, "SOUL.md");
+  if (fs.existsSync(soulPath)) {
+    try {
+      fs.chmodSync(soulPath, 0o666);
+    } catch {}
+  }
   fs.writeFileSync(soulPath, generateSoulMd(name, walletAddress, creatorAddress, genesisPrompt), { mode: 0o600 });
   console.log(chalk.green("  SOUL.md written"));
 
@@ -212,8 +259,8 @@ export async function runSetupWizard(): Promise<AutomatonConfig> {
   installDefaultSkills(skillsDir);
   console.log(chalk.green("  Default skills installed (conway-compute, conway-payments, survival)\n"));
 
-  // ─── 6. Funding guidance ──────────────────────────────────────
-  console.log(chalk.cyan("  [6/6] Funding\n"));
+  // ─── 7. Funding guidance ──────────────────────────────────────
+  console.log(chalk.cyan("  [7/7] Funding\n"));
   showFundingPanel(walletAddress, walletChainType);
 
   closePrompts();

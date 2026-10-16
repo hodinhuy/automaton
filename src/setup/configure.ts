@@ -187,6 +187,10 @@ function printMainMenu(config: AutomatonConfig): void {
   console.log(`  ${chalk.white("2.")} Model Strategy        ${dim(config.inferenceModel)} / ${dim(strategy.maxTokensPerTurn + " tokens")}`);
   console.log(`  ${chalk.white("3.")} Treasury Policy       ${dim("max transfer: " + (config.treasuryPolicy?.maxSingleTransferCents ?? DEFAULT_TREASURY_POLICY.maxSingleTransferCents) + "¢")}`);
   console.log(`  ${chalk.white("4.")} General               ${dim(config.name)} / ${dim(config.logLevel)}`);
+  const tgStatus = config.telegram?.enabled
+    ? `${config.telegram.mode} (active)`
+    : "disabled";
+  console.log(`  ${chalk.white("5.")} Social Channels       Telegram: ${dim(tgStatus)}`);
   console.log("");
   console.log(chalk.dim("  q  Quit"));
   console.log("");
@@ -198,14 +202,11 @@ async function configureProviders(config: AutomatonConfig): Promise<void> {
   console.log(chalk.cyan("\n  ── Inference Providers ─────────────────────────\n"));
   console.log(chalk.dim("  Press Enter to keep the current value. Type - to clear an optional field.\n"));
 
-  config.conwayApiKey = await askRequiredString(
-    "Conway API key",
-    config.conwayApiKey,
-  );
-
-  config.openaiApiKey = await askString("OpenAI API key  (sk-...)", config.openaiApiKey) || undefined;
-  config.anthropicApiKey = await askString("Anthropic API key  (sk-ant-...)", config.anthropicApiKey) || undefined;
-  config.ollamaBaseUrl = await askString("Ollama base URL  (http://localhost:11434)", config.ollamaBaseUrl) || undefined;
+  config.openaiApiKey = await askString("OpenAI / OpenRouter API key (sk-...)", config.openaiApiKey) || undefined;
+  config.openaiBaseUrl = await askString("Gateway Base URL (e.g. https://api.openai.com/v1)", config.openaiBaseUrl) || undefined;
+  config.anthropicApiKey = await askString("Anthropic API key (sk-ant-...)", config.anthropicApiKey) || undefined;
+  config.ollamaBaseUrl = await askString("Ollama base URL (http://localhost:11434)", config.ollamaBaseUrl) || undefined;
+  config.conwayApiKey = await askString("Conway API key (optional)", config.conwayApiKey) || undefined;
 
   console.log("");
 }
@@ -308,6 +309,45 @@ async function configureGeneral(config: AutomatonConfig): Promise<void> {
   console.log("");
 }
 
+// ─── Section: Communication Channels ──────────────────────────────
+
+async function configureChannels(config: AutomatonConfig): Promise<void> {
+  console.log(chalk.cyan("\n  ── Communication Channels ──────────────────────\n"));
+  console.log(chalk.dim("  Press Enter to keep current value. Type - to clear.\n"));
+
+  const tg = config.telegram ?? {
+    enabled: false,
+    mode: "bot",
+  };
+
+  const enabled = await askBool("Enable Telegram channel", tg.enabled);
+  tg.enabled = enabled;
+
+  if (enabled) {
+    const mode = await askChoice("Telegram mode", ["bot", "userbot"] as const, tg.mode || "bot");
+    tg.mode = mode;
+
+    if (mode === "bot") {
+      tg.botToken = (await askString("Telegram Bot Token", tg.botToken)) || undefined;
+      const currentCreator = tg.creatorTelegramId ? String(tg.creatorTelegramId) : undefined;
+      const creatorInput = await askString("Creator Telegram User ID", currentCreator);
+      tg.creatorTelegramId = creatorInput || undefined;
+    } else {
+      const currentApiId = tg.apiId ? String(tg.apiId) : undefined;
+      const apiIdStr = await askString("Telegram API ID", currentApiId);
+      tg.apiId = apiIdStr ? Number(apiIdStr) : undefined;
+      tg.apiHash = (await askString("Telegram API Hash", tg.apiHash)) || undefined;
+      tg.sessionString = (await askString("Telegram Session String", tg.sessionString)) || undefined;
+      const currentCreator = tg.creatorTelegramId ? String(tg.creatorTelegramId) : undefined;
+      const creatorInput = await askString("Creator Telegram User ID", currentCreator);
+      tg.creatorTelegramId = creatorInput || undefined;
+    }
+  }
+
+  config.telegram = tg;
+  console.log("");
+}
+
 // ─── Entry point ──────────────────────────────────────────────────
 
 export async function runConfigure(): Promise<void> {
@@ -344,12 +384,17 @@ export async function runConfigure(): Promise<void> {
         saveConfig(config);
         console.log(chalk.green("  ✓ General settings saved.\n"));
         break;
+      case "5":
+        await configureChannels(config);
+        saveConfig(config);
+        console.log(chalk.green("  ✓ Communication channels saved.\n"));
+        break;
       case "q":
       case "":
         running = false;
         break;
       default:
-        console.log(chalk.yellow(`  Unknown option: "${choice}". Enter 1-4 or q.\n`));
+        console.log(chalk.yellow(`  Unknown option: "${choice}". Enter 1-5 or q.\n`));
     }
   }
 

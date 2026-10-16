@@ -131,6 +131,7 @@ export function createConfig(params: {
   parentAddress?: string;
   treasuryPolicy?: TreasuryPolicy;
   chainType?: ChainType;
+  telegram?: import("./social/types.js").TelegramChannelConfig;
 }): AutomatonConfig {
   const normalizedSandboxId = (params.sandboxId || "").trim();
   return {
@@ -160,5 +161,6 @@ export function createConfig(params: {
     parentAddress: params.parentAddress,
     treasuryPolicy: params.treasuryPolicy ?? DEFAULT_TREASURY_POLICY,
     chainType: params.chainType || "evm",
+    telegram: params.telegram,
   };
 }

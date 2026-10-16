@@ -13,8 +13,8 @@ import { getWallet, getAutomatonDir } from "./identity/wallet.js";
 import { provision, loadApiKeyFromConfig } from "./identity/provision.js";
 import { loadConfig, resolvePath } from "./config.js";
 import { createDatabase } from "./state/database.js";
-import { createConwayClient } from "./conway/client.js";
-import { createInferenceClient } from "./conway/inference.js";
+import { createRuntimeClient } from "./runtime/client.js";
+import { createInferenceClient } from "./inference/llm-client.js";
 import { createHeartbeatDaemon } from "./heartbeat/daemon.js";
 import {
   loadHeartbeatConfig,
@@ -26,6 +26,8 @@ import { ModelRegistry } from "./inference/registry.js";
 import { loadSkills } from "./skills/loader.js";
 import { initStateRepo } from "./git/state-versioning.js";
 import { createSocialClient } from "./social/client.js";
+import { SocialConnectorHub } from "./social/hub.js";
+import { TelegramConnector } from "./social/channels/telegram.js";
 import { PolicyEngine } from "./agent/policy-engine.js";
 import { SpendTracker } from "./agent/spend-tracker.js";
 import { createDefaultRules } from "./agent/policy-rules/index.js";
@@ -35,14 +37,33 @@ import type { AutomatonIdentity, AgentState, Skill, SocialClientInterface } from
 import { DEFAULT_TREASURY_POLICY } from "./types.js";
 import { createLogger, setGlobalLogLevel, StructuredLogger } from "./observability/logger.js";
 import { prettySink } from "./observability/pretty-sink.js";
-import { bootstrapTopup } from "./conway/topup.js";
 import { randomUUID } from "crypto";
-import { keccak256, toHex } from "viem";
 
 const logger = createLogger("main");
 const VERSION = "0.2.1";
 
 async function main(): Promise<void> {
+  // Load .env file if present
+  if (fs.existsSync(".env")) {
+    try {
+      (process as any).loadEnvFile?.(".env");
+    } catch {
+      try {
+        const envContent = fs.readFileSync(".env", "utf-8");
+        for (const line of envContent.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const eqIdx = trimmed.indexOf("=");
+          if (eqIdx !== -1) {
+            const k = trimmed.slice(0, eqIdx).trim();
+            const v = trimmed.slice(eqIdx + 1).trim();
+            if (!process.env[k]) process.env[k] = v;
+          }
+        }
+      } catch {}
+    }
+  }
+
   const args = process.argv.slice(2);
 
   // ─── CLI Commands ────────────────────────────────────────────
@@ -71,15 +92,17 @@ Usage:
   automaton --configure    Edit configuration (providers, model, treasury, general)
   automaton --pick-model   Interactively pick the active inference model
   automaton --init         Initialize wallet and config directory
-  automaton --provision    Provision Conway API key via SIWE
   automaton --status       Show current automaton status
+  automaton --dashboard    Start local web monitoring dashboard
   automaton --version      Show version
   automaton --help         Show this help
 
 Environment:
-  CONWAY_API_URL           Conway API URL (default: https://api.conway.tech)
-  CONWAY_API_KEY           Conway API key (overrides config)
-  OLLAMA_BASE_URL          Ollama base URL (overrides config, e.g. http://localhost:11434)
+  OPENAI_API_KEY           OpenAI API key (or set in setup wizard)
+  ANTHROPIC_API_KEY        Anthropic API key
+  OPENAI_BASE_URL          Custom inference gateway (e.g. OpenRouter / local proxy)
+  OLLAMA_BASE_URL          Ollama base URL (e.g. http://localhost:11434)
+  DASHBOARD_PORT           Web Dashboard port (default: 8386)
 `);
     process.exit(0);
   }
@@ -106,13 +129,7 @@ Environment:
   }
 
   if (args.includes("--provision")) {
-    try {
-      const result = await provision();
-      logger.info(JSON.stringify(result));
-    } catch (err: any) {
-      logger.error(`Provision failed: ${err.message}`);
-      process.exit(1);
-    }
+    logger.info("The --provision command (Conway Web3 SIWE) is deprecated. Configure your API keys via 'automaton --configure' or environment variables.");
     process.exit(0);
   }
 
@@ -214,12 +231,17 @@ async function run(): Promise<void> {
     process.env.OPENAI_API_KEY = config.openaiApiKey;
   }
 
+  const openaiApiKey = config.openaiApiKey || process.env.OPENAI_API_KEY;
+  const anthropicApiKey = config.anthropicApiKey || process.env.ANTHROPIC_API_KEY;
+  const openrouterApiKey = process.env.OPENROUTER_API_KEY;
+
   const apiKey =
+    openaiApiKey ||
+    anthropicApiKey ||
+    openrouterApiKey ||
     config.conwayApiKey ||
     loadApiKeyFromConfig() ||
-    process.env.OPENAI_API_KEY ||
-    config.openaiApiKey ||
-    "self-hosted-local-key";
+    "local-employee-key";
 
   // Initialize database
   const dbPath = resolvePath(config.dbPath);
@@ -261,44 +283,19 @@ async function run(): Promise<void> {
   const runtimeDriver = await createRuntimeDriver();
   logger.info(`[INIT] Active sub-agent runtime driver: ${runtimeDriver.type.toUpperCase()}`);
 
-  // Create Conway client with attached runtime driver
-  const conway = createConwayClient({
+  // Create runtime client with attached runtime driver
+  const conway = createRuntimeClient({
     apiUrl: config.conwayApiUrl,
     apiKey,
     sandboxId: config.sandboxId,
     runtimeDriver,
   });
 
-  // Register automaton identity (one-time, immutable)
-  const registrationState = db.getIdentity("conwayRegistrationStatus");
+  // Local identity registration state
+  const registrationState = db.getIdentity("registrationStatus");
   if (registrationState !== "registered") {
-    try {
-      const genesisPromptHash = config.genesisPrompt
-        ? keccak256(toHex(config.genesisPrompt))
-        : undefined;
-      await conway.registerAutomaton({
-        automatonId,
-        automatonAddress: chainIdentity.address,
-        creatorAddress: config.creatorAddress,
-        name: config.name,
-        bio: config.creatorMessage || "",
-        genesisPromptHash,
-        account,
-        chainType: resolvedChainType,
-        chainIdentity,
-      });
-      db.setIdentity("conwayRegistrationStatus", "registered");
-      logger.info(`[${new Date().toISOString()}] Automaton identity registered.`);
-    } catch (err: any) {
-      const status = err?.status;
-      if (status === 409) {
-        db.setIdentity("conwayRegistrationStatus", "conflict");
-        logger.warn(`[${new Date().toISOString()}] Automaton identity conflict: ${err.message}`);
-      } else {
-        db.setIdentity("conwayRegistrationStatus", "failed");
-        logger.warn(`[${new Date().toISOString()}] Automaton identity registration failed: ${err.message}`);
-      }
-    }
+    db.setIdentity("registrationStatus", "registered");
+    logger.info(`[${new Date().toISOString()}] Employee identity initialized locally.`);
   }
 
   // Resolve Ollama base URL: env var takes precedence over config
@@ -308,15 +305,16 @@ async function run(): Promise<void> {
   // "gpt-oss:120b" route to Ollama based on their registered provider, not heuristics.
   const modelRegistry = new ModelRegistry(db.raw);
   modelRegistry.initialize();
+  const defaultModel = config.inferenceModel || "gpt-4o-mini";
   const inference = createInferenceClient({
-    apiUrl: config.conwayApiUrl || config.openaiBaseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+    apiUrl: config.openaiBaseUrl || process.env.OPENAI_BASE_URL || config.conwayApiUrl || "https://api.openai.com/v1",
     apiKey,
-    defaultModel: config.inferenceModel || "cx/gpt-6-luna",
+    defaultModel,
     maxTokens: config.maxTokensPerTurn,
-    lowComputeModel: config.modelStrategy?.lowComputeModel || "cx/gpt-6-luna",
+    lowComputeModel: config.modelStrategy?.lowComputeModel || defaultModel,
     openaiBaseUrl: config.openaiBaseUrl || process.env.OPENAI_BASE_URL,
-    openaiApiKey: config.openaiApiKey || process.env.OPENAI_API_KEY,
-    anthropicApiKey: config.anthropicApiKey,
+    openaiApiKey,
+    anthropicApiKey,
     ollamaBaseUrl,
     getModelProvider: (modelId) => modelRegistry.get(modelId)?.provider,
   });
@@ -337,6 +335,43 @@ async function run(): Promise<void> {
   const rules = createDefaultRules(treasuryPolicy);
   const policyEngine = new PolicyEngine(db.raw, rules);
   const spendTracker = new SpendTracker(db.raw);
+
+  // Initialize Omnichannel Social Connector Hub (Telegram, Zalo, Discord, etc.)
+  const socialHub = new SocialConnectorHub({
+    db: db.raw,
+    onWakeRequest: (reason) => {
+      logger.info(`[SOCIAL WAKE] ${reason}`);
+      insertWakeEvent(db.raw, "social", reason);
+    },
+  });
+
+  // Wire Telegram channel if configured (via env or config)
+  const tgToken = process.env.TELEGRAM_BOT_TOKEN || config.telegram?.botToken;
+  const tgApiId = process.env.TELEGRAM_API_ID ? Number(process.env.TELEGRAM_API_ID) : config.telegram?.apiId;
+  const tgApiHash = process.env.TELEGRAM_API_HASH || config.telegram?.apiHash;
+  const tgSession = process.env.TELEGRAM_SESSION_STRING || config.telegram?.sessionString;
+  const tgMode = (process.env.TELEGRAM_MODE || config.telegram?.mode || (tgSession ? "userbot" : "bot")) as "bot" | "userbot";
+  const tgCreatorId = process.env.TELEGRAM_CREATOR_ID || config.telegram?.creatorTelegramId;
+  const tgEnabled = process.env.TELEGRAM_ENABLED === "true" || config.telegram?.enabled || Boolean(tgToken || (tgApiId && tgSession));
+
+  if (tgEnabled) {
+    try {
+      const tgConnector = new TelegramConnector({
+        enabled: true,
+        mode: tgMode,
+        botToken: tgToken,
+        apiId: tgApiId,
+        apiHash: tgApiHash,
+        sessionString: tgSession,
+        creatorTelegramId: tgCreatorId,
+      });
+      socialHub.registerChannel(tgConnector);
+      await socialHub.initAll();
+      logger.info(`[${new Date().toISOString()}] Telegram connector initialized in ${tgMode.toUpperCase()} mode.`);
+    } catch (tgErr: any) {
+      logger.warn(`Failed to initialize Telegram connector: ${tgErr?.message}`);
+    }
+  }
 
   // Load and sync heartbeat config
   const heartbeatConfigPath = resolvePath(config.heartbeatConfigPath);
@@ -394,11 +429,12 @@ async function run(): Promise<void> {
   }
 
   // Handle graceful shutdown
-  const shutdown = () => {
+  const shutdown = async () => {
     logger.info(`[${new Date().toISOString()}] Shutting down...`);
     if (dashboardHandle) {
       dashboardHandle.close().catch(() => {});
     }
+    await socialHub.stopAll().catch(() => {});
     heartbeat.stop();
     db.setAgentState("sleeping");
     db.close();
@@ -429,6 +465,7 @@ async function run(): Promise<void> {
         conway,
         inference,
         social,
+        socialHub,
         skills,
         policyEngine,
         spendTracker,
@@ -464,8 +501,8 @@ async function run(): Promise<void> {
           `[${new Date().toISOString()}] Sleeping for ${Math.round(sleepMs / 1000)}s`,
         );
 
-        // Sleep, but check for wake requests periodically
-        const checkInterval = Math.min(sleepMs, 30_000);
+        // Sleep, but check for wake requests periodically (fast responsiveness for incoming messages)
+        const checkInterval = Math.min(sleepMs, 1_000);
         let slept = 0;
         while (slept < sleepMs) {
           await sleep(checkInterval);

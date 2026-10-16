@@ -100,6 +100,30 @@ export async function promptWithDefault(label: string, defaultValue: number): Pr
   return parsed;
 }
 
+export async function promptYesNo(label: string, defaultYes = true): Promise<boolean> {
+  const hint = defaultYes ? "[Y/n]" : "[y/N]";
+  const answer = (await ask(chalk.white(`  → ${label} ${chalk.dim(hint)}: `))).trim().toLowerCase();
+  if (!answer) return defaultYes;
+  return answer === "y" || answer === "yes";
+}
+
+export async function promptChoice<T extends string>(
+  label: string,
+  choices: readonly T[],
+  defaultChoice?: T,
+): Promise<T> {
+  const defaultText = defaultChoice ? ` [${defaultChoice}]` : "";
+  while (true) {
+    const raw = (
+      await ask(chalk.white(`  → ${label} (${choices.join("/")})${chalk.dim(defaultText)}: `))
+    ).trim();
+    if (raw === "" && defaultChoice) return defaultChoice;
+    const match = choices.find((c) => c.toLowerCase() === raw.toLowerCase());
+    if (match) return match;
+    console.log(chalk.yellow(`  Invalid choice. Please choose from: ${choices.join(", ")}`));
+  }
+}
+
 export function closePrompts(): void {
   if (rl) {
     rl.close();

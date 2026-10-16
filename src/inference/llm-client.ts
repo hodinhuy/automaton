@@ -1,8 +1,8 @@
 /**
- * Conway Inference Client
+ * Unified LLM Inference Client
  *
- * Wraps Conway's /v1/chat/completions endpoint (OpenAI-compatible).
- * The automaton pays for its own thinking through Conway credits.
+ * Supports OpenAI-compatible gateways (OpenAI, OpenRouter, etc.),
+ * Anthropic, and local Ollama backends.
  */
 
 import type {
@@ -14,13 +14,13 @@ import type {
   TokenUsage,
   InferenceToolDefinition,
 } from "../types.js";
-import { ResilientHttpClient } from "./http-client.js";
+import { ResilientHttpClient } from "../utils/http-client.js";
 
 const INFERENCE_TIMEOUT_MS = 60_000;
 
-interface InferenceClientOptions {
-  apiUrl: string;
-  apiKey: string;
+export interface InferenceClientOptions {
+  apiUrl?: string;
+  apiKey?: string;
   defaultModel: string;
   maxTokens: number;
   lowComputeModel?: string;
@@ -32,7 +32,7 @@ interface InferenceClientOptions {
   getModelProvider?: (modelId: string) => string | undefined;
 }
 
-type InferenceBackend = "conway" | "openai" | "anthropic" | "ollama";
+type InferenceBackend = "openai" | "anthropic" | "ollama";
 
 function isLoopbackHttpUrl(url: string | undefined): boolean {
   if (!url) return false;
@@ -55,7 +55,7 @@ export function createInferenceClient(
     retryableStatuses: [429, 500, 502, 503, 504],
     allowHttpOnLoopback: isLoopbackHttpUrl(ollamaBaseUrl),
   });
-  let currentModel = options.defaultModel || "cx/gpt-6-luna";
+  let currentModel = options.defaultModel || "gpt-4o-mini";
   let maxTokens = options.maxTokens;
 
   const chat = async (
@@ -72,8 +72,7 @@ export function createInferenceClient(
       getModelProvider,
     });
 
-    // Newer models (o-series, gpt-5.x, gpt-4.1) require max_completion_tokens.
-    // Ollama always uses max_tokens.
+    // Newer models require max_completion_tokens.
     const usesCompletionTokens =
       backend !== "ollama" && /^(o[1-9]|gpt-5|gpt-4\.1)/.test(model);
     const tokenLimit = opts?.maxTokens || maxTokens;
@@ -144,22 +143,18 @@ export function createInferenceClient(
     });
   };
 
-  /**
-   * @deprecated Use InferenceRouter for tier-based model selection.
-   * Still functional as a fallback; router takes priority when available.
-   */
   const setLowComputeMode = (enabled: boolean): void => {
     if (enabled) {
-      currentModel = options.lowComputeModel || options.defaultModel || "cx/gpt-6-luna";
+      currentModel = options.lowComputeModel || "gpt-5-mini";
       maxTokens = 4096;
     } else {
-      currentModel = options.defaultModel || "cx/gpt-6-luna";
+      currentModel = options.defaultModel || "gpt-4o-mini";
       maxTokens = options.maxTokens;
     }
   };
 
   const getDefaultModel = (): string => {
-    return currentModel || "cx/gpt-6-luna";
+    return currentModel || "gpt-4o-mini";
   };
 
   return {
@@ -184,11 +179,6 @@ function formatMessage(
   return formatted;
 }
 
-/**
- * Resolve which backend to use for a model.
- * When InferenceRouter is available, it uses the model registry's provider field.
- * This function is kept for backward compatibility with direct inference calls.
- */
 function resolveInferenceBackend(
   model: string,
   keys: {
@@ -198,7 +188,6 @@ function resolveInferenceBackend(
     getModelProvider?: (modelId: string) => string | undefined;
   },
 ): InferenceBackend {
-  // Registry-based routing: most accurate, no name guessing
   if (keys.getModelProvider) {
     const provider = keys.getModelProvider(model);
     if (provider === "ollama" && keys.ollamaBaseUrl) return "ollama";
@@ -206,13 +195,7 @@ function resolveInferenceBackend(
     if (provider === "openai" || provider === "conway") return "openai";
   }
 
-  // Heuristic fallback (model not in registry yet)
   if (keys.anthropicApiKey && /^claude/i.test(model)) return "anthropic";
-  if (
-    model.startsWith("cx/") ||
-    model.startsWith("ag/") ||
-    /^(gpt-[3-9]|gpt-4|gpt-5|o[1-9][-\s.]|o[1-9]$|chatgpt|gemini)/i.test(model)
-  ) return "openai";
   return "openai";
 }
 
@@ -221,7 +204,7 @@ async function chatViaOpenAiCompatible(params: {
   body: Record<string, unknown>;
   apiUrl: string;
   apiKey: string;
-  backend: "conway" | "openai" | "ollama";
+  backend: "openai" | "ollama";
   httpClient: ResilientHttpClient;
 }): Promise<InferenceResponse> {
   const cleanBaseUrl = (params.apiUrl || "https://api.openai.com/v1")
@@ -402,7 +385,6 @@ function transformMessagesForAnthropic(
     }
 
     if (msg.role === "user") {
-      // Merge consecutive user messages
       const last = transformed[transformed.length - 1];
       if (last && last.role === "user" && typeof last.content === "string") {
         last.content = last.content + "\n" + msg.content;
@@ -431,7 +413,6 @@ function transformMessagesForAnthropic(
       if (content.length === 0) {
         content.push({ type: "text", text: "" });
       }
-      // Merge consecutive assistant messages
       const last = transformed[transformed.length - 1];
       if (last && last.role === "assistant" && Array.isArray(last.content)) {
         (last.content as Array<Record<string, unknown>>).push(...content);
@@ -445,8 +426,6 @@ function transformMessagesForAnthropic(
     }
 
     if (msg.role === "tool") {
-      // Merge consecutive tool messages into a single user message
-      // with multiple tool_result content blocks
       const toolResultBlock = {
         type: "tool_result",
         tool_use_id: msg.tool_call_id || "unknown_tool_call",
@@ -455,7 +434,6 @@ function transformMessagesForAnthropic(
 
       const last = transformed[transformed.length - 1];
       if (last && last.role === "user" && Array.isArray(last.content)) {
-        // Append tool_result to existing user message with content blocks
         (last.content as Array<Record<string, unknown>>).push(toolResultBlock);
         continue;
       }
