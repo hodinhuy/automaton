@@ -147,6 +147,16 @@ export class LocalWorkerPool {
     );
 
     try {
+      try {
+        await this.config.conway.createSandbox({
+          id: workerId,
+          name: workerId,
+          workspacePath: workspace.basePath,
+        });
+      } catch (sandboxErr: any) {
+        logger.debug?.(`Sandbox creation skipped or already exists for worker ${workerId}: ${sandboxErr.message}`);
+      }
+
       await harness.initialize(task, context);
       const result = await harness.execute();
 
@@ -179,6 +189,10 @@ export class LocalWorkerPool {
       const message = error instanceof Error ? error.message : String(error);
       logger.error(`[WORKER ${workerId}] Harness execution failed: ${message}`);
       failTask(this.config.db, task.id, message, true);
+    } finally {
+      try {
+        await this.config.conway.deleteSandbox(workerId);
+      } catch {}
     }
   }
 }

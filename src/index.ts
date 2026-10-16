@@ -30,6 +30,7 @@ import { PolicyEngine } from "./agent/policy-engine.js";
 import { SpendTracker } from "./agent/spend-tracker.js";
 import { createDefaultRules } from "./agent/policy-rules/index.js";
 import { startDashboardServer } from "./dashboard/server.js";
+import { createRuntimeDriver } from "./runtime/index.js";
 import type { AutomatonIdentity, AgentState, Skill, SocialClientInterface } from "./types.js";
 import { DEFAULT_TREASURY_POLICY } from "./types.js";
 import { createLogger, setGlobalLogLevel, StructuredLogger } from "./observability/logger.js";
@@ -256,11 +257,16 @@ async function run(): Promise<void> {
     db.setIdentity("automatonId", automatonId);
   }
 
-  // Create Conway client
+  // Initialize agent runtime driver (Docker Container Sandbox or Local fallback)
+  const runtimeDriver = await createRuntimeDriver();
+  logger.info(`[INIT] Active sub-agent runtime driver: ${runtimeDriver.type.toUpperCase()}`);
+
+  // Create Conway client with attached runtime driver
   const conway = createConwayClient({
     apiUrl: config.conwayApiUrl,
     apiKey,
     sandboxId: config.sandboxId,
+    runtimeDriver,
   });
 
   // Register automaton identity (one-time, immutable)

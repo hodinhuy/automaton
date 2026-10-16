@@ -23,6 +23,8 @@ import type {
   ModelInfo,
 } from "../types.js";
 import { ResilientHttpClient } from "./http-client.js";
+import { LocalProcessDriver } from "../runtime/local-driver.js";
+import type { AgentRuntimeDriver } from "../runtime/types.js";
 import { ulid } from "ulid";
 import { keccak256, toHex } from "viem";
 import type { Address, PrivateKeyAccount } from "viem";
@@ -33,6 +35,7 @@ interface ConwayClientOptions {
   apiUrl: string;
   apiKey: string;
   sandboxId: string;
+  runtimeDriver?: AgentRuntimeDriver;
 }
 
 export function createConwayClient(options: ConwayClientOptions): ConwayClient {
@@ -103,171 +106,49 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
   };
 
 
-  // ─── Sandbox Operations (own sandbox) ────────────────────────
-  // Enforce local execution for self-hosted setup.
-  const isLocal = true;
-
-  const execLocal = (command: string, timeout?: number): ExecResult => {
-    try {
-      const stdout = execSync(command, {
-        timeout: timeout || 30_000,
-        encoding: "utf-8",
-        maxBuffer: 10 * 1024 * 1024,
-        cwd: process.env.USERPROFILE || process.env.HOME || process.cwd(),
-      });
-      return { stdout: stdout || "", stderr: "", exitCode: 0 };
-    } catch (err: any) {
-      return {
-        stdout: err.stdout || "",
-        stderr: err.stderr || err.message || "",
-        exitCode: err.status ?? 1,
-      };
-    }
-  };
+  // ─── Runtime Driver (Local Process or Docker Container) ───
+  const driver = options.runtimeDriver || new LocalProcessDriver();
 
   const exec = async (
     command: string,
     timeout?: number,
   ): Promise<ExecResult> => {
-    if (isLocal) return execLocal(command, timeout);
-
-    // Remote sandboxes default to / as cwd. Wrap commands to run from /root
-    // (matching local exec behavior) unless the command already sets a directory.
-    const wrappedCommand = `cd /root && ${command}`;
-
-    try {
-      const result = await request(
-        "POST",
-        `/v1/sandboxes/${sandboxId}/exec`,
-        { command: wrappedCommand, timeout },
-        { idempotencyKey: ulid() },
-      );
-      return {
-        stdout: result.stdout || "",
-        stderr: result.stderr || "",
-        exitCode: result.exit_code ?? result.exitCode ?? -1,
-      };
-    } catch (err: any) {
-      // SECURITY: Never silently fall back to local execution on auth failure.
-      // A 403 indicates a credentials mismatch — falling back to local exec
-      // would bypass the sandbox security boundary entirely.
-      if (err?.status === 403) {
-        throw new Error(
-          `Conway API authentication failed (403). Sandbox exec refused. ` +
-            `This may indicate a misconfigured or revoked API key. ` +
-            `Command will NOT be executed locally for security reasons.`,
-        );
-      }
-      throw err;
-    }
+    return driver.exec(command, { timeoutMs: timeout, sandboxId });
   };
-
-  const resolveLocalPath = (filePath: string): string =>
-    filePath.startsWith("~")
-      ? nodePath.join(process.env.USERPROFILE || process.env.HOME || process.cwd(), filePath.slice(1))
-      : filePath;
 
   const writeFile = async (
     filePath: string,
     content: string,
   ): Promise<void> => {
-    if (isLocal) {
-      const resolved = resolveLocalPath(filePath);
-      const dir = nodePath.dirname(resolved);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(resolved, content, "utf-8");
-      return;
-    }
-    try {
-      await request("POST", `/v1/sandboxes/${sandboxId}/files/upload/json`, {
-        path: filePath,
-        content,
-      });
-    } catch (err: any) {
-      // SECURITY: Never silently fall back to local FS on auth failure.
-      if (err?.status === 403) {
-        throw new Error(
-          `Conway API authentication failed (403). File write refused. ` +
-            `File will NOT be written locally for security reasons.`,
-        );
-      }
-      throw err;
-    }
+    return driver.writeFile(filePath, content, sandboxId);
   };
 
   const readFile = async (filePath: string): Promise<string> => {
-    if (isLocal) {
-      return fs.readFileSync(resolveLocalPath(filePath), "utf-8");
-    }
-    try {
-      const result = await request(
-        "GET",
-        `/v1/sandboxes/${sandboxId}/files/read?path=${encodeURIComponent(filePath)}`,
-        undefined,
-        { retries404: 0 },
-      );
-      return typeof result === "string" ? result : result.content || "";
-    } catch (err: any) {
-      // SECURITY: Never silently fall back to local FS on auth failure.
-      if (err?.status === 403) {
-        throw new Error(
-          `Conway API authentication failed (403). File read refused. ` +
-            `File will NOT be read locally for security reasons.`,
-        );
-      }
-      throw err;
-    }
+    return driver.readFile(filePath, sandboxId);
   };
 
   const exposePort = async (port: number): Promise<PortInfo> => {
-    if (isLocal) {
-      return {
-        port,
-        publicUrl: `http://localhost:${port}`,
-        sandboxId: "local",
-      };
-    }
-    const result = await request(
-      "POST",
-      `/v1/sandboxes/${sandboxId}/ports/expose`,
-      { port },
-    );
-    return {
-      port: result.port,
-      publicUrl: result.public_url || result.publicUrl || result.url,
-      sandboxId,
-    };
+    return driver.exposePort(port);
   };
 
   const removePort = async (port: number): Promise<void> => {
-    if (isLocal) return;
-    await request("DELETE", `/v1/sandboxes/${sandboxId}/ports/${port}`);
+    return driver.removePort(port);
   };
 
-  // ─── Sandbox Management (other sandboxes - Local) ────────────
+  // ─── Sandbox Management (Sub-agents) ─────────────────────────
 
   const createSandbox = async (
-    options: CreateSandboxOptions,
+    sandboxOpts: CreateSandboxOptions,
   ): Promise<SandboxInfo> => {
-    return {
-      id: "local",
-      status: "running",
-      region: "local",
-      vcpu: options.vcpu || 1,
-      memoryMb: options.memoryMb || 512,
-      diskGb: options.diskGb || 5,
-      createdAt: new Date().toISOString(),
-    };
+    return driver.createSandbox(sandboxOpts);
   };
 
-  const deleteSandbox = async (_targetId: string): Promise<void> => {
-    // No-op in local mode
+  const deleteSandbox = async (targetId: string): Promise<void> => {
+    return driver.deleteSandbox(targetId);
   };
 
   const listSandboxes = async (): Promise<SandboxInfo[]> => {
-    return [];
+    return driver.listSandboxes();
   };
 
   // ─── Credits (Self-hosted / Mock) ───────────────────────────
@@ -382,11 +263,11 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
   };
 
   const createScopedClient = (targetSandboxId: string): ConwayClient => {
-    return createConwayClient({ apiUrl, apiKey, sandboxId: targetSandboxId });
+    return createConwayClient({ apiUrl, apiKey, sandboxId: targetSandboxId, runtimeDriver: driver });
   };
 
   const client: ConwayClient = {
-    isLocal,
+    isLocal: driver.type === "local",
     exec,
     writeFile,
     readFile,

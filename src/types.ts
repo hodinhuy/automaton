@@ -416,7 +416,9 @@ export interface PortInfo {
 }
 
 export interface CreateSandboxOptions {
+  id?: string;
   name?: string;
+  workspacePath?: string;
   vcpu?: number;
   memoryMb?: number;
   diskGb?: number;
