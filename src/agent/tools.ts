@@ -22,6 +22,8 @@ import type {
 import type { PolicyEngine } from "./policy-engine.js";
 import { sanitizeToolResult, sanitizeInput } from "./injection-defense.js";
 import { createLogger } from "../observability/logger.js";
+import { BrowserClient } from "../browser/client.js";
+import { searchWeb, extractWeb } from "./web-tools.js";
 
 const logger = createLogger("tools");
 
@@ -54,6 +56,9 @@ function confinePathToSandbox(filePath: string): string | { error: string } {
 const EXTERNAL_SOURCE_TOOLS = new Set([
   "exec",
   "web_fetch",
+  "web_search",
+  "web_extract",
+  "browser_action",
   "check_social_inbox",
 ]);
 
@@ -245,6 +250,124 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
         } catch (err: any) {
           return `web_fetch failed: ${err.message}`;
         }
+      },
+    },
+    {
+      name: "web_search",
+      description:
+        "Tier 1 Web Search: Search the web for fresh facts, news, documentation, or discovering candidate URLs (~300ms, minimal tokens). Uses DuckDuckGo (keyless) or Tavily/Brave API if configured. Returns titles, URLs, and snippets.",
+      category: "browser",
+      riskLevel: "safe",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query or keyword phrase" },
+          limit: { type: "number", description: "Max results to return (default 5, max 10)" },
+        },
+        required: ["query"],
+      },
+      execute: async (args) => {
+        const query = args.query as string;
+        const limit = typeof args.limit === "number" ? args.limit : 5;
+        try {
+          const results = await searchWeb(query, limit);
+          if (results.length === 0) {
+            return `No search results found for query: "${query}". You may try rephrasing or escalating to browser_action.`;
+          }
+          return JSON.stringify(results, null, 2);
+        } catch (err: any) {
+          return `web_search failed: ${err.message}`;
+        }
+      },
+    },
+    {
+      name: "web_extract",
+      description:
+        "Tier 2 Web Reading: Extract main article/page content from a URL as clean, structured Markdown (strips scripts, styles, navigation, headers, footers, and ads). Saves 80-90% token budget compared to raw HTML. If blocked by Cloudflare (403/503) or page is an empty client-side SPA, returns an escalation notice to use 'browser_action'.",
+      category: "browser",
+      riskLevel: "safe",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The HTTP/HTTPS URL of the page or article to extract" },
+          maxLength: { type: "number", description: "Maximum markdown characters to return (default 12000)" },
+        },
+        required: ["url"],
+      },
+      execute: async (args) => {
+        const url = args.url as string;
+        const maxLength = typeof args.maxLength === "number" ? args.maxLength : 12000;
+        try {
+          const res = await extractWeb(url, maxLength);
+          if (res.error) {
+            return JSON.stringify(res, null, 2);
+          }
+          return `# ${res.title || url}\nSource: ${res.url}\n\n${res.content || ""}`;
+        } catch (err: any) {
+          return `web_extract failed: ${err.message}. If blocked, use 'browser_action'.`;
+        }
+      },
+    },
+    {
+      name: "browser_action",
+      description:
+        "Control a self-hosted browser (Chromium/Playwright). Navigate modern JavaScript-rendered websites, take screenshots, extract text/HTML, click buttons, fill input fields, or execute autonomous AI web browsing tasks.",
+      category: "browser",
+      riskLevel: "caution",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            description: "The action to perform: navigate, screenshot, extract, click, type, or ai_task",
+            enum: ["navigate", "screenshot", "extract", "click", "type", "ai_task"],
+          },
+          url: {
+            type: "string",
+            description: "Target URL to open (e.g. https://google.com or social media page)",
+          },
+          task: {
+            type: "string",
+            description: "Natural language description of the browsing task or goal (used for ai_task or screenshot filename/notes)",
+          },
+          selector: {
+            type: "string",
+            description: "CSS selector of element to click or type into (e.g. '#login-btn' or 'input[name=q]')",
+          },
+          text: {
+            type: "string",
+            description: "Text to type into the element specified by selector",
+          },
+          headless: {
+            type: "boolean",
+            description: "Whether to run browser in headless mode (default true)",
+          },
+        },
+      },
+      execute: async (args) => {
+        const client = new BrowserClient();
+        const res = await client.execute({
+          action: args.action as any,
+          url: args.url as string | undefined,
+          task: args.task as string | undefined,
+          selector: args.selector as string | undefined,
+          text: args.text as string | undefined,
+          headless: args.headless as boolean | undefined,
+        });
+
+        if (!res.success) {
+          return `Browser action failed: ${res.error || "Unknown error"}`;
+        }
+
+        const lines: string[] = [];
+        if (res.title) lines.push(`Page Title: ${res.title}`);
+        if (res.url) lines.push(`Final URL: ${res.url}`);
+        if (res.screenshotPath) lines.push(`Screenshot saved: ${res.screenshotPath}`);
+        if (res.content) {
+          const truncated = res.content.length > 8000 ? res.content.slice(0, 8000) + "... [truncated]" : res.content;
+          lines.push(`Content: ${truncated}`);
+        }
+        return lines.join("\n") || "Browser action completed successfully.";
       },
     },
     {

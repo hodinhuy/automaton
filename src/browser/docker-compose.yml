@@ -1,0 +1,19 @@
+services:
+  automaton-browser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: automaton-browser
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./server.py:/app/server.py
+      - ~/.automaton/browser_profile:/root/.automaton/browser_profile
+      - ~/.automaton/screenshots:/root/.automaton/screenshots
+    environment:
+      - BROWSER_PORT=8765
+      - BROWSER_HOST=0.0.0.0
+      - BROWSER_HEADLESS=true
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}

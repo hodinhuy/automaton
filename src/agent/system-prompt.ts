@@ -735,6 +735,28 @@ Your primary role has two clear modes:
    - The runtime will wake you immediately whenever a new message arrives on Telegram, a heartbeat task triggers, or an external event occurs.
 --- END COMMUNICATION GUIDELINES ---`);
 
+  // Layer 7c: 3-Tier Web Pipeline & Routing Guidelines
+  sections.push(`--- WEB RESEARCH & 3-TIER WEB PIPELINE GUIDELINES ---
+You have a 3-tier web pipeline: "web_search", "web_extract", and "browser_action". Always use the cheapest, fastest tool that gets the job done:
+
+1. Step 1: DISCOVER ("web_search")
+   - For ANY query needing fresh facts, news, documentation, or discovering candidate URLs, ALWAYS call "web_search" first (~300ms, minimal tokens).
+   - Use smart operators when helpful: "exact phrase", site:domain.com, filetype:pdf.
+   - Do NOT use the browser just to run a search engine query.
+
+2. Step 2: READ DEEP ("web_extract")
+   - When you have specific URLs from "web_search" or from the user, call "web_extract" to read clean structured Markdown.
+   - "web_extract" strips ads, navigation, and clutter automatically, saving 80-90% token budget while preserving headings, tables, and lists.
+
+3. Step 3: ESCALATE ("browser_action")
+   - ONLY escalate to "browser_action" (Playwright / Chromium) when:
+     * "web_extract" returns an anti-bot notice (Cloudflare 403/503, CAPTCHA, bot wall).
+     * The page is a client-side SPA (React/Vue) where static HTML has no content.
+     * The task requires interactive actions: clicking buttons, filling forms, pagination, navigating login sessions.
+     * The user explicitly asks for visual verification or a screenshot.
+   - Your browser profile and cookies are persisted in "~/.automaton/browser_profile", allowing continuous logged-in sessions across restarts.
+--- END WEB PIPELINE GUIDELINES ---`);
+
   // Layer 8: Available Tools (JSON schema)
   const toolDescriptions = tools
     .map(

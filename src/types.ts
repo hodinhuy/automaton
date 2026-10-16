@@ -166,7 +166,8 @@ export type ToolCategory =
   | "registry"
   | "replication"
   | "memory"
-  | "social";
+  | "social"
+  | "browser";
 
 export interface ToolContext {
   identity: AutomatonIdentity;
